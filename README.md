@@ -65,7 +65,7 @@ CredChord is not intended to replace every feature of a traditional password man
 | Packaged release | Planned | Planned | Planned |
 
 Linux contributors are especially welcome. Initial Linux work will likely target X11 first, followed by Wayland implementations for major desktop environments and portals.
-Would appreciate building connection to leading password managers.  I'm working on an azure key vault. Maybe someone would like to tackle the AWS integration
+Contributions for integrations with established password managers and secret-management platforms are also welcome. Azure Key Vault support is currently being explored, and help with AWS Secrets Manager integration would be especially valuable.
 
 ## Architecture
 

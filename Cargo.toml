@@ -1,10 +1,10 @@
 [package]
-name = "credchord"
+name = "password-out"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "A cross-platform, hotkey-driven credential manager"
-repository = "https://github.com/tobymoreno/credchord"
+repository = "https://github.com/tobymoreno/password-out"
 
 [dependencies]
 argon2 = "0.5"

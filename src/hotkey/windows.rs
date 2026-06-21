@@ -225,7 +225,7 @@ fn show_overlay_helper(message: &str) {
         Ok(path) => path,
 
         Err(error) => {
-            eprintln!("credchord error: failed to locate current executable: {error}");
+            eprintln!("password-out error: failed to locate current executable: {error}");
             return;
         }
     };
@@ -239,7 +239,7 @@ fn show_overlay_helper(message: &str) {
         .spawn();
 
     if let Err(error) = spawn_result {
-        eprintln!("credchord error: failed to spawn overlay helper: {error}");
+        eprintln!("password-out error: failed to spawn overlay helper: {error}");
     }
 }
 
@@ -253,12 +253,12 @@ fn unregister_all(ids: impl Iterator<Item = i32>) {
 
 pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), String> {
     if entries.is_empty() {
-        return Err("no CredChord entries were loaded".to_string());
+        return Err("no PasswordOut entries were loaded".to_string());
     }
 
     let mut id_to_entry: HashMap<i32, RuntimeEntry> = HashMap::new();
 
-    println!("CredChord listening globally...");
+    println!("PasswordOut listening globally...");
     println!("Registered hotkeys:");
 
     for (index, entry) in entries.into_iter().enumerate() {
@@ -327,12 +327,12 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
         last_fire.insert(id, now);
 
         let Some(entry) = id_to_entry.get(&id) else {
-            eprintln!("credchord warning: hotkey id {id} did not match an entry");
+            eprintln!("password-out warning: hotkey id {id} did not match an entry");
             continue;
         };
 
         if let Err(error) = clipboard::copy_to_clipboard(&entry.secret) {
-            eprintln!("credchord error: {error}");
+            eprintln!("password-out error: {error}");
             continue;
         }
 

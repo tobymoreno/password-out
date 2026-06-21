@@ -11,4 +11,4 @@ mod windows;
 pub use windows::show_overlay;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-compile_error!("CredChord overlay support is currently implemented only for macOS and Windows");
+compile_error!("PasswordOut overlay support is currently implemented only for macOS and Windows");

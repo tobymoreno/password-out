@@ -21,12 +21,12 @@ pub struct Config {
 pub fn usage() {
     eprintln!(
         r#"Usage:
-  credchord --listen [--file PATH] [--clear-seconds SECONDS]
+  password-out --listen [--file PATH] [--clear-seconds SECONDS]
 
 Examples:
-  credchord --listen
-  credchord --listen --file ~/.config/credchord/secrets.txt
-  credchord --listen --clear-seconds 60
+  password-out --listen
+  password-out --listen --file ~/.config/password-out/secrets.txt
+  password-out --listen --clear-seconds 60
 
 Secrets file format:
   # name|hotkey|password
@@ -35,7 +35,7 @@ Secrets file format:
   breakglass|CTRL+ALT+B|BreakGlassPassword
 
 Default:
-  --file ~/.config/credchord/secrets.txt
+  --file ~/.config/password-out/secrets.txt
   --clear-seconds 30
 "#
     );

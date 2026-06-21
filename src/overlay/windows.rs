@@ -126,7 +126,7 @@ unsafe extern "system" fn window_proc(
 
 pub fn show_overlay(message: &str) {
     if let Err(error) = show_overlay_inner(message) {
-        eprintln!("credchord overlay error: {error}");
+        eprintln!("password-out overlay error: {error}");
     }
 }
 
@@ -138,7 +138,7 @@ fn show_overlay_inner(message: &str) -> Result<(), String> {
         .map_err(|_| "overlay text was already initialized".to_string())?;
 
     let font_name = wide("Segoe UI");
-    let class_name = wide("CredChordOverlayWindow");
+    let class_name = wide("PasswordOutOverlayWindow");
 
     let font = unsafe {
         CreateFontW(

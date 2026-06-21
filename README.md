@@ -1,55 +1,55 @@
-# CredChord
+# PasswordOut
 
 **Credentials at the press of a chord.**
 
-CredChord is an open-source, cross-platform credential manager written in Rust. It maps global keyboard shortcuts to credential entries, copies the selected secret to the clipboard for a limited time, and displays a short-lived confirmation overlay **without showing the secret itself**.
+PasswordOut is an open-source, cross-platform credential manager written in Rust. It maps global keyboard shortcuts to credential entries, copies the selected secret to the clipboard for a limited time, and displays a short-lived confirmation overlay **without showing the secret itself**.
 
 > [!IMPORTANT]
-> CredChord is currently an early-stage prototype. The existing file provider stores secrets in plaintext and should be used only for development and testing. Secure storage providers and a broader security review are required before production use.
+> PasswordOut is currently an early-stage prototype. The existing file provider stores secrets in plaintext and should be used only for development and testing. Secure storage providers and a broader security review are required before production use.
 
-## Why CredChord?
+## Why PasswordOut?
 
-Traditional password managers often require opening a vault, searching for an entry, and selecting a copy action. CredChord is designed for credentials that are used repeatedly during a workflow:
+Traditional password managers often require opening a vault, searching for an entry, and selecting a copy action. PasswordOut is designed for credentials that are used repeatedly during a workflow:
 
 1. Assign a global keyboard chord to an entry.
-2. Run CredChord in listener mode.
+2. Run PasswordOut in listener mode.
 3. Press the chord from any application.
-4. CredChord retrieves the configured secret and copies it temporarily.
+4. PasswordOut retrieves the configured secret and copies it temporarily.
 5. A non-secret confirmation appears on screen.
 6. The clipboard is cleared after the configured timeout.
 
-CredChord is **not** a clipboard-history manager. It does not exist to record everything copied by the user. Its purpose is deliberate, hotkey-triggered retrieval of configured credentials.
+PasswordOut is **not** a clipboard-history manager. It does not exist to record everything copied by the user. Its purpose is deliberate, hotkey-triggered retrieval of configured credentials.
 
-## How CredChord differs from other password managers
+## How PasswordOut differs from other password managers
 
-CredChord is not intended to replace every feature of a traditional password manager. Its primary goal is to provide the fastest possible access to frequently used credentials through dedicated global keyboard shortcuts.
+PasswordOut is not intended to replace every feature of a traditional password manager. Its primary goal is to provide the fastest possible access to frequently used credentials through dedicated global keyboard shortcuts.
 
-| Password manager            | What makes it distinctive                                                                                                                                 | How CredChord differs                                                                                                                                                                                                                                         |
+| Password manager            | What makes it distinctive                                                                                                                                 | How PasswordOut differs                                                                                                                                                                                                                                         |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1Password**               | Polished personal, family, and enterprise vaults; strong browser autofill; Travel Mode; SSH-agent and developer integrations                              | 1Password is a complete cloud-backed vault platform. CredChord focuses on retrieving a specific credential immediately with a global keyboard chord, without opening or searching a vault.                                                                    |
-| **Bitwarden**               | Open-source clients, optional self-hosting, broad platform support, organizations, collections, and secure sharing                                        | Bitwarden is a complete synchronized password vault. CredChord is a lightweight desktop access layer and could eventually use Bitwarden as a credential provider.                                                                                             |
-| **Proton Pass**             | Privacy-focused password manager with passkeys and integrated hide-my-email aliases                                                                       | Proton Pass emphasizes identity privacy and the Proton ecosystem. CredChord emphasizes direct keyboard-driven retrieval across desktop applications.                                                                                                          |
-| **Dashlane**                | Password health monitoring, phishing protection, credential-risk reporting, and dark-web monitoring                                                       | Dashlane expands beyond password storage into organizational risk detection. CredChord intentionally keeps a smaller, local, workflow-focused design.                                                                                                         |
-| **Keeper**                  | Strong enterprise administration, BreachWatch, reporting, secrets management, and privileged-access features                                              | Keeper targets enterprise security governance and privileged access. CredChord targets fast individual access to frequently used credentials.                                                                                                                 |
-| **NordPass**                | Straightforward interface, password health reports, breach scanning, passkeys, and encrypted sharing                                                      | NordPass follows the conventional vault-and-autofill model. CredChord provides direct hotkey-to-credential mappings without requiring vault navigation.                                                                                                       |
-| **KeePassXC**               | Open-source, local encrypted database with no required hosted service                                                                                     | KeePassXC is the closest local-first comparison. It still centers on opening or searching a vault, while CredChord centers on immediate retrieval through a dedicated keyboard chord. A KeePass-compatible database could become a future CredChord provider. |
-| **Apple Passwords**         | Deep integration with macOS, iOS, iCloud Keychain, passkeys, verification codes, and Apple autofill                                                       | Apple Passwords is tightly integrated into the Apple ecosystem. CredChord is designed to work consistently across macOS, Windows, and Linux.                                                                                                                  |
-| **Google Password Manager** | Built directly into Chrome and Android with Google Account synchronization and password checks                                                            | Google Password Manager is browser- and Android-centered. CredChord operates at the desktop level and can retrieve credentials for terminals, native applications, remote sessions, and other non-browser workflows.                                          |
-| **Enpass**                  | Offline vault storage with user-selected synchronization through cloud storage, folders, or local Wi-Fi                                                   | Enpass focuses on local vault ownership and synchronization. CredChord focuses on the fastest possible interaction with selected entries.                                                                                                                     |
-| **CredChord**               | Dedicated global keyboard chords, temporary clipboard access, non-secret confirmation overlays, modular providers, and a cross-platform Rust architecture | CredChord is designed as a focused credential-access tool rather than a full browser-first password-management ecosystem.                                                                                                                                     |
+| **1Password**               | Polished personal, family, and enterprise vaults; strong browser autofill; Travel Mode; SSH-agent and developer integrations                              | 1Password is a complete cloud-backed vault platform. PasswordOut focuses on retrieving a specific credential immediately with a global keyboard chord, without opening or searching a vault.                                                                    |
+| **Bitwarden**               | Open-source clients, optional self-hosting, broad platform support, organizations, collections, and secure sharing                                        | Bitwarden is a complete synchronized password vault. PasswordOut is a lightweight desktop access layer and could eventually use Bitwarden as a credential provider.                                                                                             |
+| **Proton Pass**             | Privacy-focused password manager with passkeys and integrated hide-my-email aliases                                                                       | Proton Pass emphasizes identity privacy and the Proton ecosystem. PasswordOut emphasizes direct keyboard-driven retrieval across desktop applications.                                                                                                          |
+| **Dashlane**                | Password health monitoring, phishing protection, credential-risk reporting, and dark-web monitoring                                                       | Dashlane expands beyond password storage into organizational risk detection. PasswordOut intentionally keeps a smaller, local, workflow-focused design.                                                                                                         |
+| **Keeper**                  | Strong enterprise administration, BreachWatch, reporting, secrets management, and privileged-access features                                              | Keeper targets enterprise security governance and privileged access. PasswordOut targets fast individual access to frequently used credentials.                                                                                                                 |
+| **NordPass**                | Straightforward interface, password health reports, breach scanning, passkeys, and encrypted sharing                                                      | NordPass follows the conventional vault-and-autofill model. PasswordOut provides direct hotkey-to-credential mappings without requiring vault navigation.                                                                                                       |
+| **KeePassXC**               | Open-source, local encrypted database with no required hosted service                                                                                     | KeePassXC is the closest local-first comparison. It still centers on opening or searching a vault, while PasswordOut centers on immediate retrieval through a dedicated keyboard chord. A KeePass-compatible database could become a future PasswordOut provider. |
+| **Apple Passwords**         | Deep integration with macOS, iOS, iCloud Keychain, passkeys, verification codes, and Apple autofill                                                       | Apple Passwords is tightly integrated into the Apple ecosystem. PasswordOut is designed to work consistently across macOS, Windows, and Linux.                                                                                                                  |
+| **Google Password Manager** | Built directly into Chrome and Android with Google Account synchronization and password checks                                                            | Google Password Manager is browser- and Android-centered. PasswordOut operates at the desktop level and can retrieve credentials for terminals, native applications, remote sessions, and other non-browser workflows.                                          |
+| **Enpass**                  | Offline vault storage with user-selected synchronization through cloud storage, folders, or local Wi-Fi                                                   | Enpass focuses on local vault ownership and synchronization. PasswordOut focuses on the fastest possible interaction with selected entries.                                                                                                                     |
+| **PasswordOut**               | Dedicated global keyboard chords, temporary clipboard access, non-secret confirmation overlays, modular providers, and a cross-platform Rust architecture | PasswordOut is designed as a focused credential-access tool rather than a full browser-first password-management ecosystem.                                                                                                                                     |
 
-### CredChord's primary differentiators
+### PasswordOut's primary differentiators
 
 * **Direct hotkey-to-credential mapping:** A specific keyboard chord can retrieve a specific configured credential.
 * **No vault search required:** Routine access does not require opening a window, typing a search, or selecting an entry.
-* **Non-secret confirmation:** CredChord displays the entry label or confirmation message, never the password itself.
+* **Non-secret confirmation:** PasswordOut displays the entry label or confirmation message, never the password itself.
 * **Temporary clipboard exposure:** Credentials are copied for a limited period and cleared only if the clipboard content has not changed.
-* **System-wide workflow:** CredChord is designed for terminals, remote sessions, native applications, browsers, and other desktop workflows.
+* **System-wide workflow:** PasswordOut is designed for terminals, remote sessions, native applications, browsers, and other desktop workflows.
 * **Cross-platform architecture:** The Rust core separates credential providers from macOS, Windows, and Linux platform backends.
 * **Pluggable providers:** Future providers may include native operating-system credential stores, KeePass databases, Bitwarden, Azure Key Vault, HashiCorp Vault, and other secret-management systems.
-* **Small and auditable:** CredChord aims to keep security-sensitive behavior modular and understandable.
+* **Small and auditable:** PasswordOut aims to keep security-sensitive behavior modular and understandable.
 
-> CredChord does not currently attempt to replace full password managers, browser autofill systems, team vaults, passkey platforms, or enterprise privileged-access products. It is designed to complement those systems by providing a fast, keyboard-driven desktop access layer.
+> PasswordOut does not currently attempt to replace full password managers, browser autofill systems, team vaults, passkey platforms, or enterprise privileged-access products. It is designed to complement those systems by providing a fast, keyboard-driven desktop access layer.
 
 
 
@@ -73,7 +73,7 @@ Contributions for integrations with established password managers and secret-man
 flowchart LR
     User["User presses a configured hotkey"]
 
-    subgraph Runtime["CredChord runtime"]
+    subgraph Runtime["PasswordOut runtime"]
         Listener["Hotkey listener"]
         Registry["Entry and hotkey registry"]
         Provider["Credential provider"]
@@ -137,7 +137,7 @@ sequenceDiagram
     Hotkey->>Clipboard: Copy secret
     Hotkey->>Overlay: Show confirmation label
     Hotkey->>Timer: Start expiration timer
-    Timer->>Clipboard: Clear if CredChord content is unchanged
+    Timer->>Clipboard: Clear if PasswordOut content is unchanged
 ```
 
 ## Source layout
@@ -164,8 +164,8 @@ The project is intentionally modular so platform-specific work can remain isolat
 Clone and build:
 
 ```bash
-git clone https://github.com/tobymoreno/credchord.git
-cd credchord
+git clone https://github.com/tobymoreno/password-out.git
+cd password-out
 cargo build --release
 ```
 
@@ -179,7 +179,7 @@ cargo test --all-features
 
 ## Development usage
 
-The current package and executable are still named `passmgr` internally. Renaming them to `credchord` is part of the immediate project cleanup.
+The current package and executable are still named `passmgr` internally. Renaming them to `password-out` is part of the immediate project cleanup.
 
 Create the development secrets file:
 
@@ -217,30 +217,30 @@ cargo run -- --listen \
 
 ## Security model
 
-CredChord is intended to minimize the time a secret remains exposed through the desktop clipboard.
+PasswordOut is intended to minimize the time a secret remains exposed through the desktop clipboard.
 
 Current and planned controls include:
 
 - The overlay displays only an entry label or confirmation—not the password.
 - Clipboard content is removed after a configurable interval.
-- Clipboard clearing should occur only when the clipboard still contains the value written by CredChord.
+- Clipboard clearing should occur only when the clipboard still contains the value written by PasswordOut.
 - Secret values should never be written to application logs.
 - Platform-native secure storage should replace plaintext files for normal use.
 - Temporary secret buffers should be minimized and cleared where practical.
 - Clipboard-manager exclusion markers should be used where supported.
 - No telemetry should be enabled by default.
 
-### Threats CredChord does not eliminate
+### Threats PasswordOut does not eliminate
 
 No desktop password tool can fully protect secrets on a compromised host. Malware, screen-capture software, accessibility abuse, clipboard monitoring, debuggers, memory inspection, and a malicious administrator may still obtain credentials.
 
-Do not treat CredChord as protection against an already-compromised operating system.
+Do not treat PasswordOut as protection against an already-compromised operating system.
 
 ## Roadmap
 
 ### Before the first stable release
 
-- [ ] Rename the Cargo package, executable, paths, and messages from `passmgr` to `credchord`
+- [ ] Rename the Cargo package, executable, paths, and messages from `passmgr` to `password-out`
 - [ ] Replace plaintext secret storage with secure provider interfaces
 - [ ] Add macOS Keychain support
 - [ ] Verify clipboard ownership before clearing
@@ -313,4 +313,4 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Disclaimer
 
-CredChord is under active development and has not yet undergone an independent security audit. Review the implementation and threat model before trusting it with sensitive credentials.
+PasswordOut is under active development and has not yet undergone an independent security audit. Review the implementation and threat model before trusting it with sensitive credentials.

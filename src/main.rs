@@ -7,7 +7,7 @@ mod providers;
 
 fn main() {
     if let Err(error) = app::run() {
-        eprintln!("credchord error: {error}");
+        eprintln!("password-out error: {error}");
         std::process::exit(1);
     }
 }

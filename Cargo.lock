@@ -360,28 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "credchord"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "argon2",
- "base64",
- "chacha20poly1305",
- "clap",
- "cocoa",
- "directories",
- "global-hotkey",
- "objc",
- "rand",
- "rpassword",
- "serde",
- "serde_json",
- "uuid",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
 name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -898,6 +876,28 @@ dependencies = [
  "base64ct",
  "rand_core",
  "subtle",
+]
+
+[[package]]
+name = "password-out"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "argon2",
+ "base64",
+ "chacha20poly1305",
+ "clap",
+ "cocoa",
+ "directories",
+ "global-hotkey",
+ "objc",
+ "rand",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

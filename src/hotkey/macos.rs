@@ -185,7 +185,7 @@ fn show_overlay_helper(message: &str) {
         Ok(path) => path,
 
         Err(error) => {
-            eprintln!("credchord error: failed to locate current executable: {error}");
+            eprintln!("password-out error: failed to locate current executable: {error}");
             return;
         }
     };
@@ -200,7 +200,7 @@ fn show_overlay_helper(message: &str) {
         .spawn();
 
     if let Err(error) = spawn_result {
-        eprintln!("credchord error: failed to spawn overlay helper: {error}");
+        eprintln!("password-out error: failed to spawn overlay helper: {error}");
     }
 }
 
@@ -216,7 +216,7 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
 
     let mut id_to_entry: HashMap<u32, RuntimeEntry> = HashMap::new();
 
-    println!("CredChord listening globally...");
+    println!("PasswordOut listening globally...");
     println!("Registered hotkeys:");
 
     for entry in entries {
@@ -257,14 +257,14 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
 
                     let Some(entry) = worker_entries.get(&event.id) else {
                         eprintln!(
-                            "credchord warning: hotkey event {} did not match an entry",
+                            "password-out warning: hotkey event {} did not match an entry",
                             event.id
                         );
                         continue;
                     };
 
                     if let Err(error) = clipboard::copy_to_clipboard(&entry.secret) {
-                        eprintln!("credchord error: {error}");
+                        eprintln!("password-out error: {error}");
                         continue;
                     }
 
@@ -279,7 +279,7 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
                 }
 
                 Err(error) => {
-                    eprintln!("credchord error: hotkey receiver error: {error}");
+                    eprintln!("password-out error: hotkey receiver error: {error}");
                     break;
                 }
             }

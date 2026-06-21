@@ -18,4 +18,4 @@ mod windows;
 pub use windows::{canonicalize, capture, listen, test_registration};
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-compile_error!("CredChord hotkey support is currently implemented only for macOS and Windows");
+compile_error!("PasswordOut hotkey support is currently implemented only for macOS and Windows");

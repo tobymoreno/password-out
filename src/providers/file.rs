@@ -22,7 +22,7 @@ fn expand_tilde(path: &str) -> PathBuf {
 }
 
 pub fn default_secrets_file() -> PathBuf {
-    expand_tilde("~/.config/passmgr/secrets.txt")
+    expand_tilde("~/.config/credchord/secrets.txt")
 }
 
 pub fn path_from_arg(path: &str) -> PathBuf {

@@ -1,8 +1,8 @@
 use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationPolicyAccessory,
-    NSBackingStoreBuffered, NSColor, NSScreen, NSTextField,
+    NSApp, NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSColor,
+    NSScreen, NSTextField,
 };
-use cocoa::base::{id, nil, NO, YES};
+use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use objc::{class, msg_send, sel, sel_impl};
 use std::time::Duration;
@@ -42,10 +42,8 @@ pub fn show_overlay(message: &str) {
 
         // Build and configure the label first so AppKit can calculate the
         // rendered size of the complete message using the selected font.
-        let label = NSTextField::alloc(nil).initWithFrame_(NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(1.0, 1.0),
-        ));
+        let label = NSTextField::alloc(nil)
+            .initWithFrame_(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)));
 
         let ns_message = nsstring(message);
 
@@ -63,8 +61,7 @@ pub fn show_overlay(message: &str) {
 
         // Grow to the rendered text width, add padding, and prevent the
         // overlay from extending beyond the visible area of the main screen.
-        let max_width = (screen_frame.size.width - (SCREEN_MARGIN * 2.0))
-            .max(MIN_WIDTH);
+        let max_width = (screen_frame.size.width - (SCREEN_MARGIN * 2.0)).max(MIN_WIDTH);
 
         let width = (content_size.width + HORIZONTAL_PADDING)
             .max(MIN_WIDTH)
@@ -72,23 +69,13 @@ pub fn show_overlay(message: &str) {
 
         let height = content_size.height + VERTICAL_PADDING;
 
-        let x = screen_frame.origin.x
-            + (screen_frame.size.width - width) / 2.0;
+        let x = screen_frame.origin.x + (screen_frame.size.width - width) / 2.0;
 
-        let y = screen_frame.origin.y
-            + screen_frame.size.height
-            - height
-            - TOP_MARGIN;
+        let y = screen_frame.origin.y + screen_frame.size.height - height - TOP_MARGIN;
 
-        let window_rect = NSRect::new(
-            NSPoint::new(x, y),
-            NSSize::new(width, height),
-        );
+        let window_rect = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
 
-        let label_rect = NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(width, height),
-        );
+        let label_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
         let _: () = msg_send![label, setFrame: label_rect];
 
         /*

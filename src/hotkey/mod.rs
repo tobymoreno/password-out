@@ -9,7 +9,11 @@ pub struct RuntimeEntry {
 mod macos;
 
 #[cfg(target_os = "macos")]
-pub use macos::{canonicalize, capture, listen, test_registration};
+pub use macos::{capture, listen};
+
+#[cfg(target_os = "macos")]
+#[allow(unused_imports)]
+pub use macos::{canonicalize, test_registration};
 
 #[cfg(target_os = "windows")]
 mod windows;

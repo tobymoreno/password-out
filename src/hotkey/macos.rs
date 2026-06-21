@@ -1,22 +1,22 @@
 use super::RuntimeEntry;
 use crate::clipboard;
-
 use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicyAccessory};
 use cocoa::base::nil;
-
 use global_hotkey::{
-    GlobalHotKeyEvent, GlobalHotKeyManager,
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{Code, HotKey, Modifiers},
 };
-
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::io::{self, Write};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const LIST_HOTKEY: &str = "CTRL+ALT+SHIFT+L";
 
 fn parse_hotkey(input: &str) -> Result<HotKey, String> {
     let canonical = canonicalize(input)?;
-
     let mut modifiers = Modifiers::empty();
     let mut key_code: Option<Code> = None;
 
@@ -26,7 +26,6 @@ fn parse_hotkey(input: &str) -> Result<HotKey, String> {
             "ALT" => modifiers |= Modifiers::ALT,
             "SHIFT" => modifiers |= Modifiers::SHIFT,
             "META" => modifiers |= Modifiers::SUPER,
-
             "A" => key_code = Some(Code::KeyA),
             "B" => key_code = Some(Code::KeyB),
             "C" => key_code = Some(Code::KeyC),
@@ -53,7 +52,6 @@ fn parse_hotkey(input: &str) -> Result<HotKey, String> {
             "X" => key_code = Some(Code::KeyX),
             "Y" => key_code = Some(Code::KeyY),
             "Z" => key_code = Some(Code::KeyZ),
-
             "0" => key_code = Some(Code::Digit0),
             "1" => key_code = Some(Code::Digit1),
             "2" => key_code = Some(Code::Digit2),
@@ -64,7 +62,18 @@ fn parse_hotkey(input: &str) -> Result<HotKey, String> {
             "7" => key_code = Some(Code::Digit7),
             "8" => key_code = Some(Code::Digit8),
             "9" => key_code = Some(Code::Digit9),
-
+            "F1" => key_code = Some(Code::F1),
+            "F2" => key_code = Some(Code::F2),
+            "F3" => key_code = Some(Code::F3),
+            "F4" => key_code = Some(Code::F4),
+            "F5" => key_code = Some(Code::F5),
+            "F6" => key_code = Some(Code::F6),
+            "F7" => key_code = Some(Code::F7),
+            "F8" => key_code = Some(Code::F8),
+            "F9" => key_code = Some(Code::F9),
+            "F10" => key_code = Some(Code::F10),
+            "F11" => key_code = Some(Code::F11),
+            "F12" => key_code = Some(Code::F12),
             other => {
                 return Err(format!("unsupported canonical hotkey token: {other}"));
             }
@@ -95,35 +104,17 @@ pub fn canonicalize(input: &str) -> Result<String, String> {
         }
 
         match part.as_str() {
-            "CTRL" | "CONTROL" => {
-                has_control = true;
-            }
-
-            "ALT" | "OPTION" => {
-                has_alt = true;
-            }
-
-            "SHIFT" => {
-                has_shift = true;
-            }
-
-            "CMD" | "COMMAND" | "SUPER" | "META" => {
-                has_meta = true;
-            }
-
-            token
-                if token.len() == 1
-                    && token
-                        .chars()
-                        .all(|character| character.is_ascii_alphanumeric()) =>
-            {
+            "CTRL" | "CONTROL" => has_control = true,
+            "ALT" | "OPTION" => has_alt = true,
+            "SHIFT" => has_shift = true,
+            "CMD" | "COMMAND" | "SUPER" | "META" => has_meta = true,
+            token if is_supported_primary_key(token) => {
                 if key.is_some() {
                     return Err("hotkey contains more than one primary key".to_string());
                 }
 
                 key = Some(token.to_string());
             }
-
             other => {
                 return Err(format!("unsupported hotkey token: {other}"));
             }
@@ -141,32 +132,120 @@ pub fn canonicalize(input: &str) -> Result<String, String> {
     if has_control {
         parts.push("CTRL".to_string());
     }
-
     if has_alt {
         parts.push("ALT".to_string());
     }
-
     if has_shift {
         parts.push("SHIFT".to_string());
     }
-
     if has_meta {
         parts.push("META".to_string());
     }
 
     parts.push(key);
-
     Ok(parts.join("+"))
 }
 
-#[allow(dead_code)]
-pub fn capture() -> Result<String, String> {
-    Err("interactive macOS hotkey capture has not been implemented yet".to_string())
+fn is_supported_primary_key(token: &str) -> bool {
+    if token.len() == 1 {
+        return token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric());
+    }
+
+    matches!(
+        token,
+        "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12"
+    )
 }
 
-#[allow(dead_code)]
+fn native_display_name(canonical: &str) -> String {
+    canonical
+        .split('+')
+        .map(|part| match part {
+            "CTRL" => "Control".to_string(),
+            "ALT" => "Option".to_string(),
+            "SHIFT" => "Shift".to_string(),
+            "META" => "Command".to_string(),
+            key => key.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn prompt_hotkey() -> Result<String, String> {
+    print!("Hotkey: ");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush stdout: {error}"))?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| format!("failed to read hotkey: {error}"))?;
+
+    let input = input.trim();
+
+    if input.is_empty() {
+        return Err("hotkey cannot be empty".to_string());
+    }
+
+    Ok(input.to_string())
+}
+
+pub fn capture() -> Result<String, String> {
+    println!();
+    println!("Enter the global hotkey using canonical labels.");
+    println!("Modifiers: CTRL, ALT, SHIFT, META");
+    println!("Primary keys: A-Z, 0-9, and F1-F12");
+    println!("Examples:");
+    println!("  CTRL+ALT+1");
+    println!("  META+SHIFT+P");
+    println!();
+
+    loop {
+        let input = prompt_hotkey()?;
+
+        let canonical = match canonicalize(&input) {
+            Ok(value) => value,
+            Err(error) => {
+                println!("Invalid hotkey: {error}");
+                println!("Try again.");
+                println!();
+                continue;
+            }
+        };
+
+        let display = native_display_name(&canonical);
+
+        println!("Canonical: {canonical}");
+        println!("macOS display: {display}");
+        println!("Checking availability...");
+
+        match test_registration(&canonical) {
+            Ok(()) => {
+                println!("PasswordOut successfully registered this chord.");
+                return Ok(canonical);
+            }
+            Err(error) => {
+                println!("The operating system rejected this chord: {error}");
+                println!("Enter another hotkey.");
+                println!();
+            }
+        }
+    }
+}
+
 pub fn test_registration(input: &str) -> Result<(), String> {
-    let hotkey = parse_hotkey(input)?;
+    let canonical = canonicalize(input)?;
+
+    if canonical.eq_ignore_ascii_case(LIST_HOTKEY) {
+        return Err(format!(
+            "hotkey '{LIST_HOTKEY}' is reserved for showing the PasswordOut entry list"
+        ));
+    }
+
+    let hotkey = parse_hotkey(&canonical)?;
 
     let manager = GlobalHotKeyManager::new()
         .map_err(|error| format!("failed to create hotkey manager: {error}"))?;
@@ -182,39 +261,69 @@ pub fn test_registration(input: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn show_overlay_helper(message: &str) {
+fn spawn_overlay_helper(message: &str, persistent: bool) -> Option<Child> {
     let executable = match std::env::current_exe() {
         Ok(path) => path,
-
         Err(error) => {
             eprintln!("password-out error: failed to locate current executable: {error}");
-            return;
+            return None;
         }
     };
 
-    let spawn_result = Command::new(executable)
-        .arg("overlay")
+    let mut command = Command::new(executable);
+
+    command
+        .arg("--overlay")
         .arg(message)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .current_dir("/")
-        .spawn();
+        .current_dir("/");
 
-    if let Err(error) = spawn_result {
-        eprintln!("password-out error: failed to spawn overlay helper: {error}");
+    if persistent {
+        command.env("PASSWORD_OUT_OVERLAY_PERSISTENT", "1");
+    }
+
+    match command.spawn() {
+        Ok(child) => Some(child),
+        Err(error) => {
+            eprintln!("password-out error: failed to spawn overlay helper: {error}");
+            None
+        }
     }
 }
 
+fn show_overlay_helper(message: &str) {
+    let _ = spawn_overlay_helper(message, false);
+}
+
+fn build_entry_list_overlay(entries: &[RuntimeEntry]) -> String {
+    let mut message = String::from("PasswordOut entries:");
+
+    for entry in entries {
+        message.push('\n');
+        message.push_str(&format!("{:<20} {}", entry.name, entry.hotkey));
+    }
+
+    message
+}
+
 pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), String> {
+    if entries.is_empty() {
+        return Err("no PasswordOut entries were loaded".to_string());
+    }
+
     unsafe {
         let app = NSApp();
-
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
     }
 
     let manager = GlobalHotKeyManager::new()
         .map_err(|error| format!("failed to create hotkey manager: {error}"))?;
+
+    let list_overlay_message = build_entry_list_overlay(&entries);
+    let list_hotkey = parse_hotkey(LIST_HOTKEY)?;
+    let list_hotkey_id = list_hotkey.id();
 
     let mut id_to_entry: HashMap<u32, RuntimeEntry> = HashMap::new();
 
@@ -222,37 +331,98 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
     println!("Registered hotkeys:");
 
     for entry in entries {
-        let hotkey = parse_hotkey(&entry.hotkey)
+        let canonical = canonicalize(&entry.hotkey)?;
+
+        if canonical.eq_ignore_ascii_case(LIST_HOTKEY) {
+            return Err(format!(
+                "hotkey '{LIST_HOTKEY}' is reserved for showing the entry list"
+            ));
+        }
+
+        let hotkey = parse_hotkey(&canonical)
             .map_err(|error| format!("failed parsing hotkey for '{}': {error}", entry.name))?;
 
         manager
             .register(hotkey)
             .map_err(|error| format!("failed to register hotkey '{}': {error}", entry.hotkey))?;
 
-        println!("  {:<20} {}", entry.name, entry.hotkey);
-
+        println!("  {:<20} {}", entry.name, canonical);
         id_to_entry.insert(hotkey.id(), entry);
     }
 
+    manager.register(list_hotkey).map_err(|error| {
+        format!("failed to register entry-list hotkey '{LIST_HOTKEY}': {error}")
+    })?;
+
+    println!("  {:<20} {}", "show entry list", LIST_HOTKEY);
     println!();
     println!("Leave this running. Press Ctrl+C to stop.");
-    println!("Click into any GUI application, press a configured hotkey, then Command+V.");
+    println!("Hold {LIST_HOTKEY} to show available entries.");
+    println!("Release the chord to hide the entry list.");
+    println!("Click into any GUI application, press a credential hotkey, then Command+V.");
 
     let worker_entries = Arc::new(id_to_entry);
 
-    std::thread::spawn(move || {
+    thread::spawn(move || {
         let debounce_ms: u128 = 500;
         let mut last_fire: HashMap<u32, Instant> = HashMap::new();
+        let mut list_overlay_child: Option<(Child, Instant)> = None;
 
         loop {
             match GlobalHotKeyEvent::receiver().recv() {
                 Ok(event) => {
+                    if event.id == list_hotkey_id {
+                        match event.state {
+                            HotKeyState::Pressed => {
+                                let should_spawn = match list_overlay_child.as_mut() {
+                                    Some((child, _)) => match child.try_wait() {
+                                        Ok(Some(_)) => true,
+                                        Ok(None) => false,
+                                        Err(_) => true,
+                                    },
+                                    None => true,
+                                };
+
+                                if should_spawn {
+                                    if let Some(child) =
+                                        spawn_overlay_helper(&list_overlay_message, true)
+                                    {
+                                        list_overlay_child = Some((child, Instant::now()));
+                                    }
+                                }
+                            }
+                            HotKeyState::Released => {
+                                if let Some((mut child, started_at)) = list_overlay_child.take() {
+                                    // Give AppKit a brief startup window so a quick
+                                    // press/release still becomes visible before the
+                                    // helper is terminated.
+                                    const MIN_VISIBLE_TIME: Duration = Duration::from_millis(150);
+
+                                    let elapsed = started_at.elapsed();
+
+                                    if elapsed < MIN_VISIBLE_TIME {
+                                        thread::sleep(MIN_VISIBLE_TIME - elapsed);
+                                    }
+
+                                    let _ = child.kill();
+                                    let _ = child.wait();
+                                }
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    if event.state != HotKeyState::Pressed {
+                        continue;
+                    }
+
                     let now = Instant::now();
 
-                    if let Some(previous) = last_fire.get(&event.id) {
-                        if now.duration_since(*previous).as_millis() < debounce_ms {
-                            continue;
-                        }
+                    if let Some(previous) = last_fire.get(&event.id)
+                        && now.duration_since(*previous).as_millis() < debounce_ms
+                    {
+                        continue;
                     }
 
                     last_fire.insert(event.id, now);
@@ -275,12 +445,18 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
                         clear_seconds,
                     );
 
+                    println!("Copied secret for '{}'.", entry.name);
+
                     let message = format!("Password for {} copied to clipboard", entry.name);
 
                     show_overlay_helper(&message);
                 }
-
                 Err(error) => {
+                    if let Some((mut child, _)) = list_overlay_child.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+
                     eprintln!("password-out error: hotkey receiver error: {error}");
                     break;
                 }

@@ -34,6 +34,11 @@ windows-sys = { version = "0.61", features = [
 "Win32_System_LibraryLoader",
 ] }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(cargo_clippy)"] }
+
+
+
 
 
 

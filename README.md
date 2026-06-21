@@ -57,9 +57,9 @@ PasswordOut is not intended to replace every feature of a traditional password m
 
 | Capability | macOS | Windows | Linux |
 |---|---:|---:|---:|
-| Global hotkeys | Working | Planned | Planned |
-| Clipboard write and timed clear | Working | Planned | Planned |
-| Transient confirmation overlay | Working | Planned | Planned |
+| Global hotkeys | Working | Working | Planned |
+| Clipboard write and timed clear | Working | Working | Planned |
+| Transient confirmation overlay | Working | Working | Planned |
 | File-based provider | Working | Working core | Working core |
 | Secure native storage provider | Planned | Planned | Planned |
 | Packaged release | Planned | Planned | Planned |
@@ -111,9 +111,9 @@ flowchart LR
     Mac --> Clipboard
     Mac --> Overlay
 
-    Win -. planned .-> Listener
-    Win -. planned .-> Clipboard
-    Win -. planned .-> Overlay
+    Win --> Listener
+    Win --> Clipboard
+    Win --> Overlay
 
     Linux -. planned .-> Listener
     Linux -. planned .-> Clipboard
@@ -144,7 +144,7 @@ sequenceDiagram
 
 ```text
 src/
-├── main.rs              # CLI parsing and runtime coordination
+├── main.rs              # Application entry point
 ├── hotkey/              # Global hotkey registration and event handling
 ├── clipboard/           # Clipboard write and clear behavior
 ├── overlay/             # Transient, non-secret confirmation UI
@@ -179,15 +179,15 @@ cargo test --all-features
 
 ## Development usage
 
-The current package and executable are still named `passmgr` internally. Renaming them to `password-out` is part of the immediate project cleanup.
+The Cargo package and executable are named password-out.
 
 Create the development secrets file:
 
 ```bash
-mkdir -p ~/.config/passmgr
-chmod 700 ~/.config/passmgr
-touch ~/.config/passmgr/secrets.txt
-chmod 600 ~/.config/passmgr/secrets.txt
+mkdir -p ~/.config/password-out
+chmod 700 ~/.config/password-out
+touch ~/.config/password-out/secrets.txt
+chmod 600 ~/.config/password-out/secrets.txt
 ```
 
 Current development format:
@@ -208,7 +208,7 @@ Specify another file or clipboard timeout:
 
 ```bash
 cargo run -- --listen \
-  --file ~/.config/passmgr/secrets.txt \
+  --file ~/.config/password-out/secrets.txt \
   --clear-seconds 30
 ```
 
@@ -240,7 +240,7 @@ Do not treat PasswordOut as protection against an already-compromised operating 
 
 ### Before the first stable release
 
-- [ ] Rename the Cargo package, executable, paths, and messages from `passmgr` to `password-out`
+- [x] Rename the Cargo package, executable, paths, and messages to `password-out`
 - [ ] Replace plaintext secret storage with secure provider interfaces
 - [ ] Add macOS Keychain support
 - [ ] Verify clipboard ownership before clearing
@@ -277,7 +277,7 @@ Do not treat PasswordOut as protection against an already-compromised operating 
 
 ## Contributing
 
-Contributions are welcome, especially for Windows and Linux platform backends, secure storage providers, testing, documentation, and security review.
+Contributions are welcome, especially for Linux platform backends, Windows and macOS testing, secure storage providers, testing, documentation, and security review.
 
 A good platform contribution should keep platform-specific code within the corresponding backend and avoid moving secret-handling logic into the UI layer.
 

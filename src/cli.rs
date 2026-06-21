@@ -1,10 +1,14 @@
 use std::path::PathBuf;
 
-use crate::providers;
+use crate::vault;
 
 #[derive(Debug)]
 pub enum Mode {
     Listen,
+    VaultInit,
+    EntryAdd,
+    EntryList,
+    EntryRemove,
 
     // Internal helper mode.
     // Users should not call this directly.
@@ -14,35 +18,41 @@ pub enum Mode {
 #[derive(Debug)]
 pub struct Config {
     pub mode: Mode,
-    pub secrets_file: PathBuf,
+    pub vault_file: PathBuf,
     pub clear_seconds: u64,
 }
 
 pub fn usage() {
     eprintln!(
         r#"Usage:
-  password-out --listen [--file PATH] [--clear-seconds SECONDS]
+  password-out --listen [--vault PATH] [--clear-seconds SECONDS]
+  password-out vault init [--vault PATH]
+  password-out entry add [--vault PATH]
+  password-out entry list [--vault PATH]
+  password-out entry remove [--vault PATH]
 
 Examples:
   password-out --listen
-  password-out --listen --file ~/.config/password-out/secrets.txt
+  password-out --listen --vault ./vault.json
   password-out --listen --clear-seconds 60
+  password-out vault init
+  password-out vault init --vault ./vault.json
+  password-out entry add
+  password-out entry add --vault ./vault.json
+  password-out entry list
+  password-out entry list --vault ./vault.json
+  password-out entry remove
+  password-out entry remove --vault ./vault.json
 
-Secrets file format:
-  # name|hotkey|password
-  admin01|CTRL+ALT+1|MyPassword
-  svc.acas|CTRL+ALT+2|AnotherPassword
-  breakglass|CTRL+ALT+B|BreakGlassPassword
-
-Default:
-  --file ~/.config/password-out/secrets.txt
+Defaults:
+  --vault platform-specific PasswordOut config directory/vault.json
   --clear-seconds 30
 "#
     );
 }
 
 pub fn parse_args() -> Result<Config, String> {
-    let mut secrets_file = providers::file::default_secrets_file();
+    let mut vault_file = vault::default_vault_path()?;
     let mut clear_seconds: u64 = 30;
     let mut mode: Option<Mode> = None;
 
@@ -52,6 +62,47 @@ pub fn parse_args() -> Result<Config, String> {
         match arg.as_str() {
             "--listen" | "-l" => {
                 mode = Some(Mode::Listen);
+            }
+
+            "vault" => {
+                let command = args
+                    .next()
+                    .ok_or_else(|| "missing vault command; use 'vault init'".to_string())?;
+
+                match command.as_str() {
+                    "init" => {
+                        mode = Some(Mode::VaultInit);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported vault command: {command}; use 'vault init'"
+                        ));
+                    }
+                }
+            }
+
+            "entry" => {
+                let command = args.next().ok_or_else(|| {
+                    "missing entry command; use 'entry add', 'entry list', or 'entry remove'"
+                        .to_string()
+                })?;
+
+                match command.as_str() {
+                    "add" => {
+                        mode = Some(Mode::EntryAdd);
+                    }
+                    "list" => {
+                        mode = Some(Mode::EntryList);
+                    }
+                    "remove" => {
+                        mode = Some(Mode::EntryRemove);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported entry command: {command}; use 'entry add', 'entry list', or 'entry remove'"
+                        ));
+                    }
+                }
             }
 
             // Internal helper mode used by the hotkey listener to display
@@ -64,12 +115,12 @@ pub fn parse_args() -> Result<Config, String> {
                 mode = Some(Mode::Overlay(message));
             }
 
-            "--file" | "-f" => {
+            "--vault" => {
                 let path = args
                     .next()
-                    .ok_or_else(|| "missing value for --file".to_string())?;
+                    .ok_or_else(|| "missing value for --vault".to_string())?;
 
-                secrets_file = providers::file::path_from_arg(&path);
+                vault_file = PathBuf::from(path);
             }
 
             "--clear-seconds" => {
@@ -93,11 +144,13 @@ pub fn parse_args() -> Result<Config, String> {
         }
     }
 
-    let mode = mode.ok_or_else(|| "missing mode: use --listen".to_string())?;
+    let mode = mode.ok_or_else(|| {
+        "missing mode: use --listen, vault init, entry add, entry list, or entry remove".to_string()
+    })?;
 
     Ok(Config {
         mode,
-        secrets_file,
+        vault_file,
         clear_seconds,
     })
 }

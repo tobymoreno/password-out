@@ -159,10 +159,12 @@ pub fn canonicalize(input: &str) -> Result<String, String> {
     Ok(parts.join("+"))
 }
 
+#[allow(dead_code)]
 pub fn capture() -> Result<String, String> {
     Err("interactive macOS hotkey capture has not been implemented yet".to_string())
 }
 
+#[allow(dead_code)]
 pub fn test_registration(input: &str) -> Result<(), String> {
     let hotkey = parse_hotkey(input)?;
 

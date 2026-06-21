@@ -1,6 +1,6 @@
 use crate::{
     cli::{self, Mode},
-    hotkey, overlay, providers,
+    hotkey, overlay, vault,
 };
 
 pub fn run() -> Result<(), String> {
@@ -8,9 +8,11 @@ pub fn run() -> Result<(), String> {
 
     match config.mode {
         Mode::Listen => {
-            let entries = providers::file::load_entries(&config.secrets_file)?;
+            let master_password = vault::prompt_master_password("Master password: ")?;
+            let payload = vault::load_vault(&config.vault_file, master_password.as_str())?;
 
-            let runtime_entries = entries
+            let runtime_entries = payload
+                .entries
                 .into_iter()
                 .map(|entry| hotkey::RuntimeEntry {
                     name: entry.name,
@@ -21,6 +23,14 @@ pub fn run() -> Result<(), String> {
 
             hotkey::listen(runtime_entries, config.clear_seconds)
         }
+
+        Mode::VaultInit => vault::run_init(&config.vault_file),
+
+        Mode::EntryAdd => vault::run_add(&config.vault_file),
+
+        Mode::EntryList => vault::run_list(&config.vault_file),
+
+        Mode::EntryRemove => vault::run_remove(&config.vault_file),
 
         Mode::Overlay(message) => {
             overlay::show_overlay(&message);

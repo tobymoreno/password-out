@@ -4,15 +4,21 @@ use crate::clipboard;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::mem::zeroed;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::ptr::null_mut;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey, VK_F1,
+    GetAsyncKeyState, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
+    UnregisterHotKey, VK_CONTROL, VK_ESCAPE, VK_F1, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RMENU,
+    VK_RSHIFT, VK_RWIN,
 };
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+
+const LIST_HOTKEY_ID: i32 = 0x4CC2;
+const LIST_HOTKEY: &str = "CTRL+ALT+SHIFT+L";
 
 #[derive(Debug, Clone, Copy)]
 struct ParsedHotkey {
@@ -168,27 +174,84 @@ fn is_supported_primary_key(token: &str) -> bool {
     )
 }
 
-pub fn capture() -> Result<String, String> {
-    println!();
-    println!("Interactive Windows hotkey capture is not implemented yet.");
-    println!("Enter the chord manually, for example CTRL+ALT+G.");
-    print!("Hotkey: ");
-
-    io::stdout()
-        .flush()
-        .map_err(|error| format!("failed to flush stdout: {error}"))?;
-
-    let mut input = String::new();
-
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|error| format!("failed to read hotkey: {error}"))?;
-
-    canonicalize(input.trim())
+fn key_was_pressed(virtual_key: i32) -> bool {
+    unsafe { GetAsyncKeyState(virtual_key) & 1 != 0 }
 }
 
-pub fn test_registration(input: &str) -> Result<(), String> {
+fn modifier_is_down() -> bool {
+    key_is_down(VK_CONTROL as i32)
+        || key_is_down(VK_LMENU as i32)
+        || key_is_down(VK_RMENU as i32)
+        || key_is_down(VK_LSHIFT as i32)
+        || key_is_down(VK_RSHIFT as i32)
+        || key_is_down(VK_LWIN as i32)
+        || key_is_down(VK_RWIN as i32)
+}
+
+fn captured_modifiers() -> Vec<&'static str> {
+    let mut modifiers = Vec::new();
+
+    if key_is_down(VK_CONTROL as i32) {
+        modifiers.push("CTRL");
+    }
+
+    if key_is_down(VK_LMENU as i32) || key_is_down(VK_RMENU as i32) {
+        modifiers.push("ALT");
+    }
+
+    if key_is_down(VK_LSHIFT as i32) || key_is_down(VK_RSHIFT as i32) {
+        modifiers.push("SHIFT");
+    }
+
+    if key_is_down(VK_LWIN as i32) || key_is_down(VK_RWIN as i32) {
+        modifiers.push("META");
+    }
+
+    modifiers
+}
+
+fn primary_key_name(virtual_key: i32) -> Option<String> {
+    if (b'A' as i32..=b'Z' as i32).contains(&virtual_key)
+        || (b'0' as i32..=b'9' as i32).contains(&virtual_key)
+    {
+        return char::from_u32(virtual_key as u32).map(|character| character.to_string());
+    }
+
+    let first_function_key = VK_F1 as i32;
+    let last_function_key = first_function_key + 11;
+
+    if (first_function_key..=last_function_key).contains(&virtual_key) {
+        return Some(format!("F{}", virtual_key - first_function_key + 1));
+    }
+
+    None
+}
+
+fn supported_primary_keys() -> impl Iterator<Item = i32> {
+    (b'A' as i32..=b'Z' as i32)
+        .chain(b'0' as i32..=b'9' as i32)
+        .chain(VK_F1 as i32..=VK_F1 as i32 + 11)
+}
+
+fn wait_for_keys_released() {
+    while modifier_is_down()
+        || supported_primary_keys().any(key_is_down)
+        || key_is_down(VK_ESCAPE as i32)
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn is_reserved_hotkey(hotkey: &str) -> bool {
+    hotkey.eq_ignore_ascii_case(LIST_HOTKEY)
+}
+
+fn hotkey_is_available(input: &str) -> Result<bool, String> {
     const TEST_HOTKEY_ID: i32 = 0x4CC1;
+
+    if is_reserved_hotkey(input) {
+        return Ok(false);
+    }
 
     let parsed = parse_hotkey(input)?;
 
@@ -202,10 +265,13 @@ pub fn test_registration(input: &str) -> Result<(), String> {
     };
 
     if registered == 0 {
-        return Err(format!(
-            "Windows rejected hotkey '{input}': {}",
-            io::Error::last_os_error()
-        ));
+        let error = io::Error::last_os_error();
+
+        if error.raw_os_error() == Some(1409) {
+            return Ok(false);
+        }
+
+        return Err(format!("Windows rejected hotkey '{input}': {error}"));
     }
 
     let unregistered = unsafe { UnregisterHotKey(null_mut(), TEST_HOTKEY_ID) };
@@ -217,30 +283,171 @@ pub fn test_registration(input: &str) -> Result<(), String> {
         ));
     }
 
-    Ok(())
+    Ok(true)
 }
 
-fn show_overlay_helper(message: &str) {
+fn free_hotkey_suggestions(primary_key: &str) -> Result<Vec<String>, String> {
+    let mut candidates = vec![
+        format!("CTRL+ALT+SHIFT+{primary_key}"),
+        format!("CTRL+SHIFT+{primary_key}"),
+        format!("ALT+SHIFT+{primary_key}"),
+        "CTRL+ALT+F9".to_string(),
+        "CTRL+ALT+F10".to_string(),
+        "CTRL+ALT+F11".to_string(),
+        "CTRL+ALT+SHIFT+1".to_string(),
+        "CTRL+ALT+SHIFT+2".to_string(),
+        "CTRL+ALT+SHIFT+3".to_string(),
+    ];
+
+    candidates.dedup();
+
+    let mut available = Vec::new();
+
+    for candidate in candidates {
+        if hotkey_is_available(&candidate)? {
+            available.push(candidate);
+
+            if available.len() == 3 {
+                break;
+            }
+        }
+    }
+
+    Ok(available)
+}
+
+pub fn capture() -> Result<String, String> {
+    println!();
+    println!("Press the desired hotkey combination.");
+    println!("Supported primary keys: A-Z, 0-9, and F1-F12.");
+    println!("Press Esc to cancel.");
+
+    wait_for_keys_released();
+
+    loop {
+        if key_was_pressed(VK_ESCAPE as i32) {
+            wait_for_keys_released();
+            return Err("hotkey capture cancelled".to_string());
+        }
+
+        for virtual_key in supported_primary_keys() {
+            if !key_was_pressed(virtual_key) {
+                continue;
+            }
+
+            let primary_key = primary_key_name(virtual_key)
+                .ok_or_else(|| "failed to identify captured primary key".to_string())?;
+
+            let modifiers = captured_modifiers();
+
+            if modifiers.is_empty() {
+                println!("A hotkey requires at least one modifier. Try again.");
+                wait_for_keys_released();
+                continue;
+            }
+
+            let captured = format!("{}+{primary_key}", modifiers.join("+"));
+            let captured = canonicalize(&captured)?;
+
+            println!("Captured: {captured}");
+
+            wait_for_keys_released();
+
+            if hotkey_is_available(&captured)? {
+                println!("Hotkey is available.");
+                return Ok(captured);
+            }
+
+            if is_reserved_hotkey(&captured) {
+                println!("That hotkey is reserved by PasswordOut.");
+            } else {
+                println!("That hotkey is already registered by Windows or another application.");
+            }
+
+            let suggestions = free_hotkey_suggestions(&primary_key)?;
+
+            if suggestions.is_empty() {
+                println!("No free recommendations were found. Press another combination.");
+            } else {
+                println!("Available suggestions:");
+
+                for (index, suggestion) in suggestions.iter().enumerate() {
+                    println!("  {}. {}", index + 1, suggestion);
+                }
+
+                println!("Press one of these combinations, or choose another.");
+            }
+
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[allow(dead_code)]
+pub fn test_registration(input: &str) -> Result<(), String> {
+    if hotkey_is_available(input)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows rejected hotkey '{input}': it is already registered or reserved"
+        ))
+    }
+}
+
+fn spawn_overlay_helper(message: &str) -> Option<Child> {
     let executable = match std::env::current_exe() {
         Ok(path) => path,
 
         Err(error) => {
             eprintln!("password-out error: failed to locate current executable: {error}");
-            return;
+            return None;
         }
     };
 
-    let spawn_result = Command::new(executable)
+    match Command::new(executable)
         .arg("--overlay")
         .arg(message)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
+    {
+        Ok(child) => Some(child),
 
-    if let Err(error) = spawn_result {
-        eprintln!("password-out error: failed to spawn overlay helper: {error}");
+        Err(error) => {
+            eprintln!("password-out error: failed to spawn overlay helper: {error}");
+            None
+        }
     }
+}
+
+fn show_overlay_helper(message: &str) {
+    let _ = spawn_overlay_helper(message);
+}
+
+fn key_is_down(virtual_key: i32) -> bool {
+    unsafe { GetAsyncKeyState(virtual_key) < 0 }
+}
+
+fn hide_list_overlay_when_chord_released(mut child: Child) {
+    thread::spawn(move || {
+        loop {
+            let control_down = key_is_down(VK_CONTROL as i32);
+            let alt_down = key_is_down(VK_LMENU as i32);
+            let shift_down = key_is_down(VK_LSHIFT as i32);
+            let l_down = key_is_down('L' as i32);
+
+            if !control_down && !alt_down && !shift_down && !l_down {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
 }
 
 fn unregister_all(ids: impl Iterator<Item = i32>) {
@@ -251,11 +458,23 @@ fn unregister_all(ids: impl Iterator<Item = i32>) {
     }
 }
 
+fn build_entry_list_overlay(entries: &[RuntimeEntry]) -> String {
+    let mut message = String::from("PasswordOut entries:");
+
+    for entry in entries {
+        message.push('\n');
+        message.push_str(&format!("{:<20} {}", entry.name, entry.hotkey));
+    }
+
+    message
+}
+
 pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), String> {
     if entries.is_empty() {
         return Err("no PasswordOut entries were loaded".to_string());
     }
 
+    let list_overlay_message = build_entry_list_overlay(&entries);
     let mut id_to_entry: HashMap<i32, RuntimeEntry> = HashMap::new();
 
     println!("PasswordOut listening globally...");
@@ -286,9 +505,32 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
         id_to_entry.insert(id, entry);
     }
 
+    let list_hotkey = parse_hotkey(LIST_HOTKEY)?;
+
+    let list_registered = unsafe {
+        RegisterHotKey(
+            null_mut(),
+            LIST_HOTKEY_ID,
+            list_hotkey.modifiers,
+            list_hotkey.virtual_key,
+        )
+    };
+
+    if list_registered == 0 {
+        unregister_all(id_to_entry.keys().copied());
+
+        return Err(format!(
+            "failed to register entry-list hotkey '{LIST_HOTKEY}': {}",
+            io::Error::last_os_error()
+        ));
+    }
+
+    println!("  {:<20} {}", "show entry list", LIST_HOTKEY);
     println!();
     println!("Leave this running. Press Ctrl+C to stop.");
-    println!("Click into any Windows application, press a configured hotkey, then Ctrl+V.");
+    println!("Hold {LIST_HOTKEY} to show available entries.");
+    println!("Release the chord to hide the entry list.");
+    println!("Click into any Windows application, press a credential hotkey, then Ctrl+V.");
 
     let debounce_ms: u128 = 500;
     let mut last_fire: HashMap<i32, Instant> = HashMap::new();
@@ -300,6 +542,9 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
 
         if result == -1 {
             unregister_all(id_to_entry.keys().copied());
+            unsafe {
+                UnregisterHotKey(null_mut(), LIST_HOTKEY_ID);
+            }
 
             return Err(format!(
                 "Windows message loop failed: {}",
@@ -326,6 +571,14 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
 
         last_fire.insert(id, now);
 
+        if id == LIST_HOTKEY_ID {
+            if let Some(child) = spawn_overlay_helper(&list_overlay_message) {
+                hide_list_overlay_when_chord_released(child);
+            }
+
+            continue;
+        }
+
         let Some(entry) = id_to_entry.get(&id) else {
             eprintln!("password-out warning: hotkey id {id} did not match an entry");
             continue;
@@ -346,6 +599,10 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
     }
 
     unregister_all(id_to_entry.keys().copied());
+
+    unsafe {
+        UnregisterHotKey(null_mut(), LIST_HOTKEY_ID);
+    }
 
     Ok(())
 }

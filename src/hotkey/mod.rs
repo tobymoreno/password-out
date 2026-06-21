@@ -15,7 +15,7 @@ pub use macos::{canonicalize, capture, listen, test_registration};
 mod windows;
 
 #[cfg(target_os = "windows")]
-pub use windows::{canonicalize, capture, listen, test_registration};
+pub use windows::{capture, listen};
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 compile_error!("PasswordOut hotkey support is currently implemented only for macOS and Windows");

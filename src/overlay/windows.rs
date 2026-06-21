@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DeleteObject, DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, PAINTSTRUCT, ReleaseDC,
-    SelectObject, SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
+    BeginPaint, CreateFontW, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_VCENTER, DeleteObject,
+    DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, PAINTSTRUCT, ReleaseDC, SelectObject,
+    SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
 };
 
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -21,13 +21,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-const FONT_SIZE: i32 = 120;
+const MAX_FONT_SIZE: i32 = 120;
+const MIN_FONT_SIZE: i32 = 16;
+const FONT_STEP: i32 = 4;
 const HORIZONTAL_PADDING: i32 = 80;
-const VERTICAL_PADDING: i32 = 30;
+const VERTICAL_PADDING: i32 = 40;
 const MIN_WIDTH: i32 = 320;
 const SCREEN_MARGIN: i32 = 40;
 const TOP_MARGIN: i32 = 40;
-const DISPLAY_DURATION_MS: u32 = 1600;
+const SINGLE_LINE_DURATION_MS: u32 = 1600;
+const MULTILINE_DURATION_MS: u32 = 5000;
 const TIMER_ID: usize = 1;
 
 static OVERLAY_TEXT: OnceLock<Vec<u16>> = OnceLock::new();
@@ -81,7 +84,7 @@ unsafe extern "system" fn window_proc(
                             text.as_ptr(),
                             character_count,
                             &mut rect,
-                            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                            DT_CENTER | DT_VCENTER | DT_NOPREFIX,
                         );
                     }
                 }
@@ -130,19 +133,10 @@ pub fn show_overlay(message: &str) {
     }
 }
 
-fn show_overlay_inner(message: &str) -> Result<(), String> {
-    let text = wide(message);
-
-    OVERLAY_TEXT
-        .set(text)
-        .map_err(|_| "overlay text was already initialized".to_string())?;
-
-    let font_name = wide("Segoe UI");
-    let class_name = wide("PasswordOutOverlayWindow");
-
+fn create_font(font_name: &[u16], font_size: i32) -> Result<isize, String> {
     let font = unsafe {
         CreateFontW(
-            -FONT_SIZE,
+            -font_size,
             0,
             0,
             0,
@@ -166,7 +160,64 @@ fn show_overlay_inner(message: &str) -> Result<(), String> {
         ));
     }
 
-    FONT_HANDLE.store(font as isize, Ordering::Relaxed);
+    Ok(font as isize)
+}
+
+fn measure_lines(screen_dc: isize, font: isize, lines: &[&str]) -> Result<(i32, i32), String> {
+    let previous_font = unsafe { SelectObject(screen_dc as _, font as _) };
+
+    let mut maximum_line_width = 0;
+    let mut line_height = 0;
+
+    for line in lines {
+        let line_text = wide(line);
+        let mut line_size: SIZE = unsafe { zeroed() };
+        let character_count = line_text.len().saturating_sub(1) as i32;
+
+        let measured = unsafe {
+            GetTextExtentPoint32W(
+                screen_dc as _,
+                line_text.as_ptr(),
+                character_count,
+                &mut line_size,
+            )
+        };
+
+        if measured == 0 {
+            if !previous_font.is_null() {
+                unsafe {
+                    SelectObject(screen_dc as _, previous_font);
+                }
+            }
+
+            return Err(format!(
+                "failed to measure overlay text: {}",
+                io::Error::last_os_error()
+            ));
+        }
+
+        maximum_line_width = maximum_line_width.max(line_size.cx);
+        line_height = line_height.max(line_size.cy);
+    }
+
+    if !previous_font.is_null() {
+        unsafe {
+            SelectObject(screen_dc as _, previous_font);
+        }
+    }
+
+    Ok((maximum_line_width, line_height))
+}
+
+fn show_overlay_inner(message: &str) -> Result<(), String> {
+    let text = wide(message);
+
+    OVERLAY_TEXT
+        .set(text)
+        .map_err(|_| "overlay text was already initialized".to_string())?;
+
+    let font_name = wide("Segoe UI");
+    let class_name = wide("PasswordOutOverlayWindow");
 
     let instance = unsafe { GetModuleHandleW(null()) };
 
@@ -210,6 +261,8 @@ fn show_overlay_inner(message: &str) -> Result<(), String> {
 
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    let maximum_width = (screen_width - (SCREEN_MARGIN * 2)).max(MIN_WIDTH);
+    let maximum_height = (screen_height - TOP_MARGIN - SCREEN_MARGIN).max(1);
 
     let screen_dc = unsafe { GetDC(null_mut()) };
 
@@ -220,54 +273,75 @@ fn show_overlay_inner(message: &str) -> Result<(), String> {
         ));
     }
 
-    let previous_font = unsafe { SelectObject(screen_dc, font) };
+    let lines: Vec<&str> = message.lines().collect();
+    let line_count = lines.len().max(1) as i32;
 
-    let mut text_size: SIZE = unsafe { zeroed() };
-    let overlay_text = OVERLAY_TEXT
-        .get()
-        .ok_or_else(|| "overlay text was not initialized".to_string())?;
+    let mut selected_font = 0_isize;
+    let mut selected_line_width = 0;
+    let mut selected_line_height = 0;
+    let mut selected_line_spacing = 0;
+    let mut selected_required_height = 0;
+    let mut font_size = MAX_FONT_SIZE;
 
-    let character_count = overlay_text.len().saturating_sub(1) as i32;
+    loop {
+        let candidate_font = create_font(&font_name, font_size)?;
+        let (line_width, line_height) = measure_lines(screen_dc as isize, candidate_font, &lines)?;
 
-    let measured = unsafe {
-        GetTextExtentPoint32W(
-            screen_dc,
-            overlay_text.as_ptr(),
-            character_count,
-            &mut text_size,
-        )
-    };
+        // Keep line spacing proportional to the selected font instead of
+        // using a fixed number of pixels.
+        let line_spacing = (font_size / 10).max(2);
 
-    if !previous_font.is_null() {
-        unsafe {
-            SelectObject(screen_dc, previous_font);
+        let text_height = (line_height * line_count) + (line_spacing * (line_count - 1).max(0));
+        let required_width = line_width + HORIZONTAL_PADDING;
+        let required_height = text_height + VERTICAL_PADDING;
+
+        let width_fits = required_width <= maximum_width;
+        let height_fits = required_height <= maximum_height;
+
+        if (width_fits && height_fits) || font_size <= MIN_FONT_SIZE {
+            selected_font = candidate_font;
+            selected_line_width = line_width;
+            selected_line_height = line_height;
+            selected_line_spacing = line_spacing;
+            selected_required_height = required_height;
+            break;
         }
+
+        unsafe {
+            DeleteObject(candidate_font as _);
+        }
+
+        font_size = (font_size - FONT_STEP).max(MIN_FONT_SIZE);
     }
 
     unsafe {
         ReleaseDC(null_mut(), screen_dc);
     }
 
-    if measured == 0 {
-        return Err(format!(
-            "failed to measure overlay text: {}",
-            io::Error::last_os_error()
-        ));
-    }
+    FONT_HANDLE.store(selected_font, Ordering::Relaxed);
 
-    let maximum_width = (screen_width - (SCREEN_MARGIN * 2)).max(MIN_WIDTH);
-
-    let width = (text_size.cx + HORIZONTAL_PADDING)
+    let width = (selected_line_width + HORIZONTAL_PADDING)
         .max(MIN_WIDTH)
         .min(maximum_width);
 
-    let height = text_size.cy + VERTICAL_PADDING;
+    let text_height =
+        (selected_line_height * line_count) + (selected_line_spacing * (line_count - 1).max(0));
+
+    // selected_required_height was calculated from the final measured font.
+    // Keep the safety clamp for extremely large lists even at the minimum font.
+    let height = selected_required_height
+        .max(text_height + VERTICAL_PADDING)
+        .min(maximum_height);
 
     let x = (screen_width - width) / 2;
     let y = TOP_MARGIN.min((screen_height - height).max(0));
 
     let extended_style =
         WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT;
+
+    let overlay_text = OVERLAY_TEXT
+        .get()
+        .ok_or_else(|| "overlay text was not initialized".to_string())?;
 
     let hwnd = unsafe {
         CreateWindowExW(
@@ -311,7 +385,13 @@ fn show_overlay_inner(message: &str) -> Result<(), String> {
         UpdateWindow(hwnd);
     }
 
-    let timer = unsafe { SetTimer(hwnd, TIMER_ID, DISPLAY_DURATION_MS, None) };
+    let display_duration = if line_count > 1 {
+        MULTILINE_DURATION_MS
+    } else {
+        SINGLE_LINE_DURATION_MS
+    };
+
+    let timer = unsafe { SetTimer(hwnd, TIMER_ID, display_duration, None) };
 
     if timer == 0 {
         unsafe {

@@ -1,9 +1,10 @@
 mod app;
 mod cli;
 mod clipboard;
+mod entries;
 mod hotkey;
 mod overlay;
-mod providers;
+mod vault;
 
 fn main() {
     if let Err(error) = app::run() {

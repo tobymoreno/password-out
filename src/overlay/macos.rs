@@ -11,7 +11,7 @@ use objc::{class, msg_send, sel, sel_impl};
 use std::time::Duration;
 
 const SINGLE_LINE_FONT_SIZE: f64 = 44.0;
-const MULTILINE_FONT_SIZE: f64 = 32.0;
+const MULTILINE_FONT_SIZE: f64 = 44.0;
 const MULTILINE_LINE_HEIGHT: f64 = 44.0;
 
 const SINGLE_HORIZONTAL_PADDING: f64 = 80.0;

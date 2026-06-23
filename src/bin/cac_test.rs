@@ -1,10 +1,20 @@
-use anyhow::Result;
+use std::io::{self, Write};
+
+use anyhow::{Context as _, Result, bail};
 
 use password_out::smartcard::{
-    certificate::{decode_certificate, display_certificate},
+    certificate::{
+        CertificateInfo, decode_certificate, display_certificate, parse_certificate_info,
+    },
     pcsc::connect_first_card,
-    piv::{read_authentication_certificate, select_piv},
+    piv::{PivCertificate, PivSlot, read_certificate, select_piv},
 };
+
+struct CertificateCandidate {
+    piv_certificate: PivCertificate,
+    certificate_der: Vec<u8>,
+    info: CertificateInfo,
+}
 
 fn main() -> Result<()> {
     let card = connect_first_card()?;
@@ -17,30 +27,201 @@ fn main() -> Result<()> {
     println!("PIV SELECT response size: {} bytes", select_response.len());
     println!("PIV application selected.");
 
-    println!();
-    println!("Reading PIV Authentication certificate object 5FC105...");
+    let mut certificates = Vec::new();
 
-    let piv_certificate = read_authentication_certificate(&card)?;
+    println!();
+    println!("Reading standard PIV certificate slots...");
+
+    for slot in PivSlot::ALL {
+        println!();
+        println!(
+            "Checking {} certificate — slot {:02X}...",
+            slot.name(),
+            slot.key_reference()
+        );
+
+        let piv_certificate = match read_certificate(&card, slot) {
+            Ok(certificate) => certificate,
+            Err(error) => {
+                println!("Not available: {error}");
+                continue;
+            }
+        };
+
+        let certificate_der = match decode_certificate(&piv_certificate) {
+            Ok(certificate) => certificate,
+            Err(error) => {
+                println!("Unable to decode certificate: {error}");
+                continue;
+            }
+        };
+
+        let info = match parse_certificate_info(slot, &certificate_der) {
+            Ok(info) => info,
+            Err(error) => {
+                println!("Unable to parse certificate: {error}");
+                continue;
+            }
+        };
+
+        println!(
+            "Certificate encoding: {}",
+            if piv_certificate.compressed {
+                "gzip-compressed DER"
+            } else {
+                "DER"
+            }
+        );
+
+        println!("Certificate DER size: {} bytes", certificate_der.len());
+
+        display_certificate(&info);
+
+        certificates.push(CertificateCandidate {
+            piv_certificate,
+            certificate_der,
+            info,
+        });
+    }
+
+    println!();
+    println!("Certificate scan complete.");
+    println!("Certificates found: {}", certificates.len());
+
+    let suitable_indices: Vec<usize> = certificates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| {
+            candidate
+                .info
+                .suitable_for_key_management()
+                .then_some(index)
+        })
+        .collect();
 
     println!(
-        "Certificate encoding: {}",
-        if piv_certificate.compressed {
-            "gzip-compressed DER"
-        } else {
-            "DER"
-        }
+        "Valid key-management candidates: {}",
+        suitable_indices.len()
     );
 
-    let certificate_der = decode_certificate(&piv_certificate)?;
+    let selected_index = select_key_management_candidate(&certificates, &suitable_indices)?;
 
-    println!("Certificate DER size: {} bytes", certificate_der.len());
-
-    display_certificate(&certificate_der)?;
+    let selected = &certificates[selected_index];
 
     println!();
-    println!("Phase 1 completed successfully.");
+    println!("Selected certificate");
+    println!("--------------------");
+    println!(
+        "Slot: {:02X} ({})",
+        selected.info.slot.key_reference(),
+        selected.info.slot.name()
+    );
+    println!("Subject: {}", selected.info.subject);
+    println!("Issuer: {}", selected.info.issuer);
+    println!("Serial number: {}", selected.info.serial_number);
+    println!("Valid until: {}", selected.info.valid_until);
+    println!(
+        "Public-key algorithm: {}",
+        selected.info.public_key_algorithm
+    );
+    println!(
+        "Certificate DER size: {} bytes",
+        selected.certificate_der.len()
+    );
+    println!(
+        "Certificate compressed on card: {}",
+        selected.piv_certificate.compressed
+    );
+
+    println!();
     println!("No PIN operation was performed.");
+    println!("No vault key was encrypted or decrypted.");
     println!("Certificate-chain trust has not yet been evaluated.");
 
     Ok(())
+}
+
+fn select_key_management_candidate(
+    certificates: &[CertificateCandidate],
+    suitable_indices: &[usize],
+) -> Result<usize> {
+    match suitable_indices {
+        [] => {
+            bail!(
+                "no valid PIV key-management certificate was found \
+                 in the standard slots"
+            );
+        }
+
+        [only_index] => {
+            let candidate = &certificates[*only_index];
+
+            println!();
+            println!(
+                "Automatically selected the only valid key-management \
+                 certificate in slot {:02X}.",
+                candidate.info.slot.key_reference()
+            );
+
+            Ok(*only_index)
+        }
+
+        _ => prompt_for_candidate(certificates, suitable_indices),
+    }
+}
+
+fn prompt_for_candidate(
+    certificates: &[CertificateCandidate],
+    suitable_indices: &[usize],
+) -> Result<usize> {
+    println!();
+    println!("Available key-management certificates");
+    println!("-------------------------------------");
+
+    for (choice, certificate_index) in suitable_indices.iter().enumerate() {
+        let candidate = &certificates[*certificate_index];
+
+        println!();
+        println!(
+            "{}. Slot {:02X} — {}",
+            choice + 1,
+            candidate.info.slot.key_reference(),
+            candidate.info.slot.name()
+        );
+        println!("   Subject: {}", candidate.info.subject);
+        println!("   Issuer: {}", candidate.info.issuer);
+        println!("   Serial: {}", candidate.info.serial_number);
+        println!("   Expires: {}", candidate.info.valid_until);
+        println!("   Algorithm: {}", candidate.info.public_key_algorithm);
+    }
+
+    loop {
+        println!();
+        println!("Select a certificate [1-{}]: ", suitable_indices.len());
+
+        io::stdout()
+            .flush()
+            .context("failed to flush selection prompt")?;
+
+        let mut input = String::new();
+
+        io::stdin()
+            .read_line(&mut input)
+            .context("failed to read certificate selection")?;
+
+        let choice = match input.trim().parse::<usize>() {
+            Ok(choice) => choice,
+            Err(_) => {
+                println!("Enter a number from 1 to {}.", suitable_indices.len());
+                continue;
+            }
+        };
+
+        if !(1..=suitable_indices.len()).contains(&choice) {
+            println!("Enter a number from 1 to {}.", suitable_indices.len());
+            continue;
+        }
+
+        return Ok(suitable_indices[choice - 1]);
+    }
 }

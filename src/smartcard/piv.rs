@@ -17,24 +17,57 @@ const SELECT_PIV_APDU: &[u8] = &[
     0x00, // Le
 ];
 
-const GET_PIV_AUTH_CERT_APDU: &[u8] = &[
-    0x00, // CLA
-    0xCB, // INS: GET DATA
-    0x3F, // P1
-    0xFF, // P2
-    0x05, // Lc
-    0x5C, // Tag list
-    0x03, // Object identifier length
-    0x5F, 0xC1, 0x05, // PIV Authentication certificate object
-    0x00, // Le
-];
-
 const TAG_DATA_OBJECT: u32 = 0x53;
 const TAG_CERTIFICATE: u32 = 0x70;
 const TAG_CERTIFICATE_INFO: u32 = 0x71;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PivSlot {
+    Authentication,
+    DigitalSignature,
+    KeyManagement,
+    CardAuthentication,
+}
+
+impl PivSlot {
+    pub const ALL: [Self; 4] = [
+        Self::Authentication,
+        Self::DigitalSignature,
+        Self::KeyManagement,
+        Self::CardAuthentication,
+    ];
+
+    pub fn key_reference(self) -> u8 {
+        match self {
+            Self::Authentication => 0x9A,
+            Self::DigitalSignature => 0x9C,
+            Self::KeyManagement => 0x9D,
+            Self::CardAuthentication => 0x9E,
+        }
+    }
+
+    pub fn certificate_object(self) -> [u8; 3] {
+        match self {
+            Self::Authentication => [0x5F, 0xC1, 0x05],
+            Self::DigitalSignature => [0x5F, 0xC1, 0x0A],
+            Self::KeyManagement => [0x5F, 0xC1, 0x0B],
+            Self::CardAuthentication => [0x5F, 0xC1, 0x01],
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Authentication => "PIV Authentication",
+            Self::DigitalSignature => "Digital Signature",
+            Self::KeyManagement => "Key Management",
+            Self::CardAuthentication => "Card Authentication",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PivCertificate {
+    pub slot: PivSlot,
     pub encoded_certificate: Vec<u8>,
     pub compressed: bool,
 }
@@ -43,9 +76,17 @@ pub fn select_piv(card: &Card) -> Result<Vec<u8>> {
     transmit_complete(card, SELECT_PIV_APDU).context("failed to select the PIV application")
 }
 
-pub fn read_authentication_certificate(card: &Card) -> Result<PivCertificate> {
-    let piv_object = transmit_complete(card, GET_PIV_AUTH_CERT_APDU)
-        .context("failed to retrieve the PIV Authentication certificate")?;
+pub fn read_certificate(card: &Card, slot: PivSlot) -> Result<PivCertificate> {
+    let object_id = slot.certificate_object();
+    let get_data_apdu = build_get_data_apdu(object_id);
+
+    let piv_object = transmit_complete(card, &get_data_apdu).with_context(|| {
+        format!(
+            "failed to retrieve {} certificate from slot {:02X}",
+            slot.name(),
+            slot.key_reference()
+        )
+    })?;
 
     let certificate_container = extract_data_object(&piv_object)?;
 
@@ -58,9 +99,26 @@ pub fn read_authentication_certificate(card: &Card) -> Result<PivCertificate> {
         .unwrap_or(0);
 
     Ok(PivCertificate {
+        slot,
         encoded_certificate,
         compressed: certificate_info & 0x01 != 0,
     })
+}
+
+fn build_get_data_apdu(object_id: [u8; 3]) -> Vec<u8> {
+    vec![
+        0x00, // CLA
+        0xCB, // INS: GET DATA
+        0x3F, // P1
+        0xFF, // P2
+        0x05, // Lc
+        0x5C, // Tag list
+        0x03, // Object identifier length
+        object_id[0],
+        object_id[1],
+        object_id[2],
+        0x00, // Le
+    ]
 }
 
 fn extract_data_object(data: &[u8]) -> Result<&[u8]> {
@@ -69,7 +127,6 @@ fn extract_data_object(data: &[u8]) -> Result<&[u8]> {
     if tlv.tag == TAG_DATA_OBJECT {
         Ok(tlv.value)
     } else {
-        // Some cards may return the inner PIV certificate TLVs directly.
         Ok(data)
     }
 }

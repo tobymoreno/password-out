@@ -8,11 +8,13 @@ use cocoa::appkit::{
 use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use objc::{class, msg_send, sel, sel_impl};
+use std::ffi::c_void;
 use std::time::Duration;
 
 const SINGLE_LINE_FONT_SIZE: f64 = 44.0;
 const MULTILINE_FONT_SIZE: f64 = 44.0;
 const MULTILINE_LINE_HEIGHT: f64 = 44.0;
+const COUNTDOWN_FONT_SIZE: f64 = 34.0;
 
 const SINGLE_HORIZONTAL_PADDING: f64 = 80.0;
 const SINGLE_VERTICAL_PADDING: f64 = 30.0;
@@ -21,12 +23,18 @@ const MULTILINE_HORIZONTAL_PADDING: f64 = 56.0;
 const MULTILINE_VERTICAL_PADDING: f64 = 40.0;
 const MULTILINE_CHARACTER_WIDTH_FACTOR: f64 = 0.62;
 
+const COUNTDOWN_WIDTH: f64 = 360.0;
+const COUNTDOWN_HEIGHT: f64 = 210.0;
+
 const MIN_WIDTH: f64 = 320.0;
 const MAX_MULTILINE_WIDTH: f64 = 1100.0;
 const SCREEN_MARGIN: f64 = 40.0;
 const TOP_MARGIN: f64 = 40.0;
+const RIGHT_MARGIN: f64 = 40.0;
 
 const DISPLAY_DURATION: Duration = Duration::from_millis(1_600);
+const COUNTDOWN_TICK: Duration = Duration::from_secs(1);
+const CLEARED_DURATION: Duration = Duration::from_millis(900);
 
 const FALLBACK_SCREEN_WIDTH: f64 = 1_440.0;
 const FALLBACK_SCREEN_HEIGHT: f64 = 900.0;
@@ -39,9 +47,25 @@ const PANEL_COLLECTION_BEHAVIOR: u64 = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIA
 
 const OVERLAY_WINDOW_LEVEL: i64 = 1_000;
 
-// NSTextAlignment values.
 const ALIGN_LEFT: u64 = 0;
 const ALIGN_CENTER: u64 = 2;
+
+type DispatchQueue = *mut c_void;
+
+unsafe extern "C" {
+    static mut _dispatch_main_q: c_void;
+
+    fn dispatch_async_f(
+        queue: DispatchQueue,
+        context: *mut c_void,
+        work: unsafe extern "C" fn(*mut c_void),
+    );
+}
+
+struct CountdownUpdate {
+    text_view: usize,
+    text: String,
+}
 
 fn nsstring(value: &str) -> id {
     unsafe { NSString::alloc(nil).init_str(value) }
@@ -76,23 +100,26 @@ unsafe fn appkit_colors() -> (id, id) {
 unsafe fn single_line_font() -> id {
     let font_class = class!(NSFont);
 
-    msg_send![
-        font_class,
-        boldSystemFontOfSize: SINGLE_LINE_FONT_SIZE
-    ]
+    msg_send![font_class, boldSystemFontOfSize: SINGLE_LINE_FONT_SIZE]
 }
 
 unsafe fn multiline_font() -> id {
     let font_class = class!(NSFont);
-
-    // A fixed-pitch font keeps entry names and hotkeys aligned in columns.
-    let font: id = msg_send![
-        font_class,
-        userFixedPitchFontOfSize: MULTILINE_FONT_SIZE
-    ];
+    let font: id = msg_send![font_class, userFixedPitchFontOfSize: MULTILINE_FONT_SIZE];
 
     if font == nil {
         msg_send![font_class, systemFontOfSize: MULTILINE_FONT_SIZE]
+    } else {
+        font
+    }
+}
+
+unsafe fn countdown_font() -> id {
+    let font_class = class!(NSFont);
+    let font: id = msg_send![font_class, userFixedPitchFontOfSize: COUNTDOWN_FONT_SIZE];
+
+    if font == nil {
+        msg_send![font_class, boldSystemFontOfSize: COUNTDOWN_FONT_SIZE]
     } else {
         font
     }
@@ -122,6 +149,7 @@ unsafe fn create_multiline_text_view(
     font: id,
     text_color: id,
     clear_color: id,
+    alignment: u64,
 ) -> id {
     let initial_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
     let text_view_class = class!(NSTextView);
@@ -130,7 +158,7 @@ unsafe fn create_multiline_text_view(
     let ns_message = nsstring(message);
 
     let _: () = msg_send![text_view, setString: ns_message];
-    let _: () = msg_send![text_view, setAlignment: ALIGN_LEFT];
+    let _: () = msg_send![text_view, setAlignment: alignment];
     let _: () = msg_send![text_view, setFont: font];
     let _: () = msg_send![text_view, setTextColor: text_color];
     let _: () = msg_send![text_view, setBackgroundColor: clear_color];
@@ -161,7 +189,6 @@ fn multiline_metrics(message: &str) -> (usize, usize) {
         longest_line = longest_line.max(line.chars().count());
     }
 
-    // str::lines() returns no rows for an empty string.
     (line_count.max(1), longest_line.max(1))
 }
 
@@ -175,7 +202,7 @@ unsafe fn calculate_single_line_frame(label: id, screen_frame: NSRect) -> NSRect
 
     let height = content_size.height + SINGLE_VERTICAL_PADDING;
 
-    positioned_frame(screen_frame, width, height)
+    positioned_center_frame(screen_frame, width, height)
 }
 
 fn calculate_multiline_frame(message: &str, screen_frame: NSRect) -> NSRect {
@@ -196,11 +223,18 @@ fn calculate_multiline_frame(message: &str, screen_frame: NSRect) -> NSRect {
         .max(100.0)
         .min(max_height);
 
-    positioned_frame(screen_frame, width, height)
+    positioned_center_frame(screen_frame, width, height)
 }
 
-fn positioned_frame(screen_frame: NSRect, width: f64, height: f64) -> NSRect {
+fn positioned_center_frame(screen_frame: NSRect, width: f64, height: f64) -> NSRect {
     let x = screen_frame.origin.x + ((screen_frame.size.width - width) / 2.0);
+    let y = screen_frame.origin.y + screen_frame.size.height - height - TOP_MARGIN;
+
+    NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+}
+
+fn positioned_top_right_frame(screen_frame: NSRect, width: f64, height: f64) -> NSRect {
+    let x = screen_frame.origin.x + screen_frame.size.width - width - RIGHT_MARGIN;
     let y = screen_frame.origin.y + screen_frame.size.height - height - TOP_MARGIN;
 
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
@@ -228,6 +262,21 @@ unsafe fn resize_label(label: id, window_frame: NSRect, is_multiline: bool) {
     );
 
     let _: () = msg_send![label, setFrame: label_frame];
+}
+
+unsafe fn resize_countdown_view(text_view: id, window_frame: NSRect) {
+    let horizontal_inset = 24.0;
+    let vertical_inset = 22.0;
+
+    let frame = NSRect::new(
+        NSPoint::new(horizontal_inset, vertical_inset),
+        NSSize::new(
+            window_frame.size.width - (horizontal_inset * 2.0),
+            window_frame.size.height - (vertical_inset * 2.0),
+        ),
+    );
+
+    let _: () = msg_send![text_view, setFrame: frame];
 }
 
 unsafe fn create_panel(window_frame: NSRect, label: id, clear_color: id) -> id {
@@ -268,6 +317,54 @@ fn schedule_exit() {
     });
 }
 
+fn countdown_message(remaining_seconds: u64) -> String {
+    format!("PASSWORD OUT\n{remaining_seconds:02} SEC\nAUTO CLEAR")
+}
+
+unsafe extern "C" fn apply_countdown_update(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+
+    let update = unsafe { Box::from_raw(context.cast::<CountdownUpdate>()) };
+    let text_view = update.text_view as id;
+    let ns_message = nsstring(&update.text);
+
+    let _: () = unsafe { msg_send![text_view, setString: ns_message] };
+    let _: () = unsafe { msg_send![text_view, setNeedsDisplay: YES] };
+}
+
+fn queue_countdown_update(text_view: usize, text: String) {
+    let update = Box::new(CountdownUpdate { text_view, text });
+    let context = Box::into_raw(update).cast::<c_void>();
+
+    let main_queue = std::ptr::addr_of_mut!(_dispatch_main_q).cast::<c_void>();
+
+    unsafe {
+        dispatch_async_f(main_queue, context, apply_countdown_update);
+    }
+}
+
+fn schedule_countdown(text_view: id, total_seconds: u64) {
+    let text_view = text_view as usize;
+
+    std::thread::spawn(move || {
+        for remaining in (1..total_seconds).rev() {
+            std::thread::sleep(COUNTDOWN_TICK);
+            queue_countdown_update(text_view, countdown_message(remaining));
+        }
+
+        std::thread::sleep(COUNTDOWN_TICK);
+        queue_countdown_update(
+            text_view,
+            "PASSWORD OUT\nCLEARED\nCLIPBOARD EMPTY".to_string(),
+        );
+
+        std::thread::sleep(CLEARED_DURATION);
+        std::process::exit(0);
+    });
+}
+
 pub fn show_overlay(message: &str) {
     unsafe {
         let _pool = NSAutoreleasePool::new(nil);
@@ -279,7 +376,13 @@ pub fn show_overlay(message: &str) {
         let screen_frame = main_screen_frame();
         let (clear_color, text_color) = appkit_colors();
         let content_view = if is_multiline {
-            create_multiline_text_view(message, multiline_font(), text_color, clear_color)
+            create_multiline_text_view(
+                message,
+                multiline_font(),
+                text_color,
+                clear_color,
+                ALIGN_LEFT,
+            )
         } else {
             create_single_line_label(message, single_line_font(), text_color, clear_color)
         };
@@ -293,13 +396,48 @@ pub fn show_overlay(message: &str) {
         resize_label(content_view, window_frame, is_multiline);
 
         let panel = create_panel(window_frame, content_view, clear_color);
-
-        // Display without activating PasswordOut or taking keyboard focus.
         let _: () = msg_send![panel, orderFrontRegardless];
 
         if should_auto_exit() {
             schedule_exit();
         }
+
+        app.run();
+    }
+}
+
+pub fn show_countdown(total_seconds: u64) {
+    if total_seconds == 0 {
+        return;
+    }
+
+    unsafe {
+        let _pool = NSAutoreleasePool::new(nil);
+
+        let app = NSApp();
+        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
+
+        let screen_frame = main_screen_frame();
+        let (clear_color, text_color) = appkit_colors();
+        let initial_message = countdown_message(total_seconds);
+
+        let text_view = create_multiline_text_view(
+            &initial_message,
+            countdown_font(),
+            text_color,
+            clear_color,
+            ALIGN_CENTER,
+        );
+
+        let window_frame =
+            positioned_top_right_frame(screen_frame, COUNTDOWN_WIDTH, COUNTDOWN_HEIGHT);
+
+        resize_countdown_view(text_view, window_frame);
+
+        let panel = create_panel(window_frame, text_view, clear_color);
+        let _: () = msg_send![panel, orderFrontRegardless];
+
+        schedule_countdown(text_view, total_seconds);
 
         app.run();
     }

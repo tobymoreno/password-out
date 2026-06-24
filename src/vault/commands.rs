@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 use password_out::smartcard::{
     certificate::{decode_certificate, parse_certificate_info},
     pcsc::connect_first_card,
-    piv::{read_certificate, select_piv, PivSlot},
+    piv::{PivSlot, read_certificate, select_piv},
     wrapping::wrap_key_with_cac_certificate,
 };
 
@@ -15,12 +15,8 @@ use crate::hotkey;
 
 use super::format::CacKeyWrapper;
 
-use super::{
-    load_vault, prompt_master_password, prompt_new_master_password, save_vault,
-};
-use super::service::{
-    initialize_cac_vault, initialize_password_vault,
-};
+use super::service::{initialize_cac_vault, initialize_password_vault};
+use super::{load_vault, prompt_master_password, prompt_new_master_password, save_vault};
 
 pub fn run_init(path: &Path) -> Result<(), String> {
     println!("Choose the vault unlock method:");

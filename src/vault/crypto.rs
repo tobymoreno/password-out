@@ -78,7 +78,7 @@ pub fn decrypt_payload(
                 result
             }
 
-            VaultUnlockMethod::Cac { .. } => Err(
+            VaultUnlockMethod::Cac { .. } | VaultUnlockMethod::Certificate { .. } => Err(
                 "this vault uses CAC unlock; use the CAC or backup-password recovery flow"
                     .to_string(),
             ),

@@ -1,3 +1,4 @@
+use password_out::certificate::{CertificateIdentity, KeyWrapAlgorithm};
 use serde::{Deserialize, Serialize};
 
 pub const VAULT_FORMAT_VERSION_V1: u32 = 1;
@@ -9,8 +10,8 @@ pub const CIPHER_ALGORITHM: &str = "xchacha20poly1305";
 pub const CAC_WRAP_ALGORITHM_RSA_OAEP_SHA256: &str = "rsa-oaep-sha256";
 pub const CAC_KEY_MANAGEMENT_SLOT: &str = "9D";
 
-/// Supports existing version-1 password vaults and the new version-2
-/// wrapped-key format.
+/// Supports existing version-1 password vaults and the version-2 wrapped-key
+/// format.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum VaultEnvelope {
@@ -45,10 +46,22 @@ pub enum VaultUnlockMethod {
     /// The random vault key is protected only by an Argon2id password wrapper.
     Password { wrapper: PasswordKeyWrapper },
 
-    /// The random vault key is primarily protected by the CAC and also by a
-    /// required Argon2id recovery-password wrapper.
+    /// Legacy CAC-specific representation.
+    ///
+    /// Retained so vaults written before the generic certificate wrapper was
+    /// introduced continue to deserialize and validate.
     Cac {
         cac_wrapper: CacKeyWrapper,
+        backup_wrapper: PasswordKeyWrapper,
+    },
+
+    /// Generic X.509 certificate protection.
+    ///
+    /// The private-key operation may be supplied by a PFX file, CAC/PIV card,
+    /// PKCS#11 token, TPM, or another injected provider. A backup-password
+    /// wrapper remains mandatory for recovery.
+    Certificate {
+        certificate_wrapper: CertificateKeyWrapper,
         backup_wrapper: PasswordKeyWrapper,
     },
 }
@@ -63,8 +76,7 @@ pub struct PasswordKeyWrapper {
     pub cipher: CipherPayload,
 }
 
-/// Protects the random vault key using the public key from the CAC key
-/// management certificate.
+/// Legacy CAC-specific wrapper retained for backward compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacKeyWrapper {
     /// PIV key reference, normally "9D".
@@ -77,6 +89,36 @@ pub struct CacKeyWrapper {
     pub algorithm: String,
 
     /// Base64-encoded vault key encrypted with the CAC public key.
+    pub wrapped_key: String,
+}
+
+/// Indicates where PasswordOut expects to find the private key associated with
+/// a certificate wrapper.
+///
+/// This is only a user-interface and provider-selection hint. The certificate
+/// fingerprint remains the authoritative binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "backend", rename_all = "snake_case")]
+pub enum CertificateBackend {
+    Cac {
+        /// PIV key reference, normally "9D".
+        slot: String,
+    },
+
+    Pfx {
+        /// Optional display hint. Unlock callers may choose another path.
+        suggested_filename: Option<String>,
+    },
+}
+
+/// Protects the random vault key using an X.509 certificate public key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CertificateKeyWrapper {
+    pub backend: CertificateBackend,
+    pub identity: CertificateIdentity,
+    pub algorithm: KeyWrapAlgorithm,
+
+    /// Base64-encoded public-key-wrapped vault key.
     pub wrapped_key: String,
 }
 
@@ -169,6 +211,14 @@ impl VaultUnlockMethod {
                 cac_wrapper.validate()?;
                 backup_wrapper.validate("CAC backup wrapper")
             }
+
+            Self::Certificate {
+                certificate_wrapper,
+                backup_wrapper,
+            } => {
+                certificate_wrapper.validate()?;
+                backup_wrapper.validate("certificate backup wrapper")
+            }
         }
     }
 }
@@ -191,7 +241,7 @@ impl CacKeyWrapper {
             ));
         }
 
-        if self.certificate_sha256.is_empty() {
+        if self.certificate_sha256.trim().is_empty() {
             return Err("CAC certificate SHA-256 fingerprint is missing".to_string());
         }
 
@@ -202,8 +252,64 @@ impl CacKeyWrapper {
             ));
         }
 
-        if self.wrapped_key.is_empty() {
+        if self.wrapped_key.trim().is_empty() {
             return Err("CAC-wrapped vault key is missing".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+impl CertificateBackend {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Cac { slot } => {
+                if !slot.eq_ignore_ascii_case(CAC_KEY_MANAGEMENT_SLOT) {
+                    return Err(format!(
+                        "unsupported CAC slot '{}'; expected {}",
+                        slot, CAC_KEY_MANAGEMENT_SLOT
+                    ));
+                }
+
+                Ok(())
+            }
+
+            Self::Pfx { suggested_filename } => {
+                if suggested_filename
+                    .as_deref()
+                    .is_some_and(|filename| filename.trim().is_empty())
+                {
+                    return Err("PFX suggested filename cannot be empty when provided".to_string());
+                }
+
+                Ok(())
+            }
+        }
+    }
+}
+
+impl CertificateKeyWrapper {
+    pub fn validate(&self) -> Result<(), String> {
+        self.backend.validate()?;
+
+        if self.identity.sha256_fingerprint.trim().is_empty() {
+            return Err("certificate SHA-256 fingerprint is missing".to_string());
+        }
+
+        if self.identity.subject.trim().is_empty() {
+            return Err("certificate subject is missing".to_string());
+        }
+
+        if self.identity.issuer.trim().is_empty() {
+            return Err("certificate issuer is missing".to_string());
+        }
+
+        if self.identity.serial_number.trim().is_empty() {
+            return Err("certificate serial number is missing".to_string());
+        }
+
+        if self.wrapped_key.trim().is_empty() {
+            return Err("certificate-wrapped vault key is missing".to_string());
         }
 
         Ok(())
@@ -292,6 +398,17 @@ mod tests {
         }
     }
 
+    fn test_certificate_identity() -> CertificateIdentity {
+        CertificateIdentity {
+            sha256_fingerprint: "AA:BB:CC:DD".to_string(),
+            subject: "CN=PasswordOut Test".to_string(),
+            issuer: "CN=PasswordOut Test".to_string(),
+            serial_number: "01".to_string(),
+            not_before: "Jun 24 00:00:00 2026 GMT".to_string(),
+            not_after: "Jun 24 00:00:00 2031 GMT".to_string(),
+        }
+    }
+
     #[test]
     fn payload_can_find_entries() {
         let payload = VaultPayload {
@@ -344,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn version_2_cac_envelope_requires_backup_wrapper() {
+    fn legacy_version_2_cac_envelope_remains_valid() {
         let envelope = VaultEnvelope::V2(VaultEnvelopeV2 {
             version: VAULT_FORMAT_VERSION_V2,
             unlock: VaultUnlockMethod::Cac {
@@ -366,11 +483,77 @@ mod tests {
     }
 
     #[test]
-    fn cac_wrapper_rejects_wrong_slot() {
+    fn legacy_cac_wrapper_rejects_wrong_slot() {
         let wrapper = CacKeyWrapper {
             slot: "9A".to_string(),
             certificate_sha256: "sha256-fingerprint".to_string(),
             algorithm: CAC_WRAP_ALGORITHM_RSA_OAEP_SHA256.to_string(),
+            wrapped_key: "wrapped-key".to_string(),
+        };
+
+        assert!(wrapper.validate().is_err());
+    }
+
+    #[test]
+    fn version_2_pfx_certificate_envelope_is_valid() {
+        let envelope = VaultEnvelope::V2(VaultEnvelopeV2 {
+            version: VAULT_FORMAT_VERSION_V2,
+            unlock: VaultUnlockMethod::Certificate {
+                certificate_wrapper: CertificateKeyWrapper {
+                    backend: CertificateBackend::Pfx {
+                        suggested_filename: Some("password-out-vault.pfx".to_string()),
+                    },
+                    identity: test_certificate_identity(),
+                    algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+                    wrapped_key: "wrapped-key".to_string(),
+                },
+                backup_wrapper: PasswordKeyWrapper {
+                    kdf: test_kdf(),
+                    cipher: test_cipher(),
+                },
+            },
+            cipher: test_cipher(),
+        });
+
+        assert!(envelope.validate().is_ok());
+    }
+
+    #[test]
+    fn generic_certificate_wrapper_supports_cac_backend() {
+        let wrapper = CertificateKeyWrapper {
+            backend: CertificateBackend::Cac {
+                slot: CAC_KEY_MANAGEMENT_SLOT.to_string(),
+            },
+            identity: test_certificate_identity(),
+            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+            wrapped_key: "wrapped-key".to_string(),
+        };
+
+        assert!(wrapper.validate().is_ok());
+    }
+
+    #[test]
+    fn generic_certificate_wrapper_rejects_wrong_cac_slot() {
+        let wrapper = CertificateKeyWrapper {
+            backend: CertificateBackend::Cac {
+                slot: "9A".to_string(),
+            },
+            identity: test_certificate_identity(),
+            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+            wrapped_key: "wrapped-key".to_string(),
+        };
+
+        assert!(wrapper.validate().is_err());
+    }
+
+    #[test]
+    fn generic_certificate_wrapper_rejects_empty_pfx_filename_hint() {
+        let wrapper = CertificateKeyWrapper {
+            backend: CertificateBackend::Pfx {
+                suggested_filename: Some("   ".to_string()),
+            },
+            identity: test_certificate_identity(),
+            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
             wrapped_key: "wrapped-key".to_string(),
         };
 

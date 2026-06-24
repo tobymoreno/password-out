@@ -2,9 +2,11 @@ use openssl::encrypt::Encrypter;
 use openssl::hash::MessageDigest;
 use openssl::rsa::Padding;
 use openssl::x509::X509;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum KeyWrapAlgorithm {
+    #[serde(rename = "rsa-oaep-sha256")]
     RsaOaepSha256,
 }
 

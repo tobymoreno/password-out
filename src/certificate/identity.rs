@@ -1,7 +1,8 @@
 use openssl::hash::MessageDigest;
 use openssl::x509::{X509, X509NameRef};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CertificateIdentity {
     pub sha256_fingerprint: String,
     pub subject: String,

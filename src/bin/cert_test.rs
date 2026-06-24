@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
 use password_out::certificate::{
-    SelfSignedCertificateOptions,
-    certificate_identity,
-    create_self_signed_pfx,
-    load_pfx,
-    write_pfx,
+    SelfSignedCertificateOptions, certificate_identity, create_self_signed_pfx, load_pfx, write_pfx,
 };
 
 fn main() -> Result<(), String> {
@@ -28,24 +24,13 @@ fn main() -> Result<(), String> {
         rsa_bits: 2048,
     };
 
-    let generated = create_self_signed_pfx(
-        &options,
-        &password,
-    )?;
+    let generated = create_self_signed_pfx(&options, &password)?;
 
-    write_pfx(
-        &output_path,
-        &generated.pfx_der,
-    )?;
+    write_pfx(&output_path, &generated.pfx_der)?;
 
-    let loaded = load_pfx(
-        &output_path,
-        &password,
-    )?;
+    let loaded = load_pfx(&output_path, &password)?;
 
-    let identity = certificate_identity(
-        &loaded.certificate,
-    )?;
+    let identity = certificate_identity(&loaded.certificate)?;
 
     println!("Created PFX: {}", output_path.display());
     println!("Subject: {}", identity.subject);

@@ -1,10 +1,16 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use password_out::certificate::{
+    CertificateSource, KeyWrapAlgorithm, certificate_identity_from_der, wrap_key_with_certificate,
+};
+
 use std::path::Path;
 
 use zeroize::Zeroize;
 
 use super::crypto::{create_password_wrapper, encrypt_payload_with_key, generate_vault_key};
 use super::format::{
-    CURRENT_VAULT_FORMAT_VERSION, CacKeyWrapper, VaultEnvelope, VaultEnvelopeV2, VaultUnlockMethod,
+    CURRENT_VAULT_FORMAT_VERSION, CacKeyWrapper, CertificateBackend, CertificateKeyWrapper,
+    VaultEnvelope, VaultEnvelopeV2, VaultUnlockMethod,
 };
 use super::{VaultPayload, decrypt_payload, encrypt_payload, read_envelope, write_envelope};
 
@@ -71,6 +77,64 @@ where
     result
 }
 
+/// Initializes a certificate-protected vault.
+///
+/// A fresh random vault key encrypts the payload. The vault key is wrapped
+/// using the supplied X.509 certificate and is also protected by a backup
+/// password for recovery.
+pub fn initialize_certificate_vault(
+    path: &Path,
+    backup_password: &str,
+    certificate_source: &dyn CertificateSource,
+    backend: CertificateBackend,
+) -> Result<(), String> {
+    ensure_vault_does_not_exist(path)?;
+
+    backend.validate()?;
+
+    let certificate_der = certificate_source.certificate_der()?;
+
+    let identity = certificate_identity_from_der(&certificate_der)?;
+
+    let payload = VaultPayload::default();
+    let mut vault_key = generate_vault_key();
+
+    let result = (|| {
+        let cipher = encrypt_payload_with_key(&payload, &vault_key)?;
+
+        let wrapped_key = wrap_key_with_certificate(
+            &certificate_der,
+            KeyWrapAlgorithm::RsaOaepSha256,
+            &vault_key,
+        )?;
+
+        let backup_wrapper = create_password_wrapper(&vault_key, backup_password)?;
+
+        let certificate_wrapper = CertificateKeyWrapper {
+            backend,
+            identity,
+            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+            wrapped_key: STANDARD.encode(wrapped_key),
+        };
+
+        let envelope = VaultEnvelope::V2(VaultEnvelopeV2 {
+            version: CURRENT_VAULT_FORMAT_VERSION,
+            unlock: VaultUnlockMethod::Certificate {
+                certificate_wrapper,
+                backup_wrapper,
+            },
+            cipher,
+        });
+
+        envelope.validate()?;
+        write_envelope(path, &envelope)
+    })();
+
+    vault_key.zeroize();
+
+    result
+}
+
 /// Loads a password-unlocked vault.
 ///
 /// This supports:
@@ -89,7 +153,7 @@ pub fn load_password_vault(path: &Path, master_password: &str) -> Result<VaultPa
         VaultEnvelope::V2(version_2) => match &version_2.unlock {
             VaultUnlockMethod::Password { .. } => decrypt_payload(&envelope, master_password),
 
-            VaultUnlockMethod::Cac { .. } => Err(
+            VaultUnlockMethod::Cac { .. } | VaultUnlockMethod::Certificate { .. } => Err(
                 "this vault uses CAC unlock; use the CAC unlock or backup recovery command"
                     .to_string(),
             ),
@@ -114,9 +178,13 @@ pub fn save_password_vault(
         }
 
         VaultEnvelope::V2(ref version_2) => {
-            if matches!(version_2.unlock, VaultUnlockMethod::Cac { .. }) {
+            if matches!(
+                version_2.unlock,
+                VaultUnlockMethod::Cac { .. } | VaultUnlockMethod::Certificate { .. }
+            ) {
                 return Err(
-                    "cannot save a CAC vault through the password-only save path".to_string(),
+                    "cannot save a certificate-protected vault through the password-only save path"
+                        .to_string(),
                 );
             }
         }
@@ -246,4 +314,101 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(test_dir);
     }
+}
+
+#[test]
+fn initializes_and_unlocks_certificate_vault_with_pfx_provider() {
+    use super::*;
+    use base64::Engine as _;
+    use password_out::certificate::{
+        CertificateSource, KeyWrapAlgorithm, PfxKeyProvider, SelfSignedCertificateOptions,
+        certificate_identity_from_der, create_self_signed_pfx, load_pfx_der,
+        unwrap_key_with_provider,
+    };
+
+    use crate::vault::format::CertificateBackend;
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "password-out-certificate-vault-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+
+    std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+    let vault_path = test_dir.join("vault.json");
+    let backup_password = "correct horse battery staple";
+
+    let generated = create_self_signed_pfx(
+        &SelfSignedCertificateOptions {
+            common_name: "PasswordOut Vault Test".to_string(),
+            friendly_name: "PasswordOut Vault Test".to_string(),
+            rsa_bits: 2048,
+            validity_days: 30,
+        },
+        "pfx-password",
+    )
+    .expect("PFX generation should succeed");
+
+    let loaded =
+        load_pfx_der(&generated.pfx_der, "pfx-password").expect("PFX loading should succeed");
+
+    let mut provider =
+        PfxKeyProvider::from_loaded_pfx(loaded).expect("PFX provider creation should succeed");
+
+    let certificate_der = provider
+        .certificate_der()
+        .expect("certificate DER encoding should succeed");
+
+    initialize_certificate_vault(
+        &vault_path,
+        backup_password,
+        &provider,
+        CertificateBackend::Pfx {
+            suggested_filename: Some("password-out-test.pfx".to_string()),
+        },
+    )
+    .expect("certificate vault initialization should succeed");
+
+    let envelope = read_envelope(&vault_path).expect("vault envelope should load");
+
+    let VaultEnvelope::V2(version_2) = envelope else {
+        panic!("expected version-2 vault envelope");
+    };
+
+    let VaultUnlockMethod::Certificate {
+        certificate_wrapper,
+        backup_wrapper: _,
+    } = version_2.unlock
+    else {
+        panic!("expected certificate unlock method");
+    };
+
+    assert_eq!(
+        certificate_wrapper.algorithm,
+        KeyWrapAlgorithm::RsaOaepSha256
+    );
+
+    let expected_identity =
+        certificate_identity_from_der(&certificate_der).expect("certificate identity should load");
+
+    assert_eq!(
+        certificate_wrapper.identity.sha256_fingerprint,
+        expected_identity.sha256_fingerprint
+    );
+
+    let wrapped_key = base64::engine::general_purpose::STANDARD
+        .decode(&certificate_wrapper.wrapped_key)
+        .expect("wrapped key should be valid base64");
+
+    let vault_key = unwrap_key_with_provider(
+        &mut provider,
+        &certificate_wrapper.identity,
+        certificate_wrapper.algorithm,
+        &wrapped_key,
+    )
+    .expect("matching PFX provider should unwrap the vault key");
+
+    assert_eq!(vault_key.len(), 32);
+
+    let _ = std::fs::remove_dir_all(test_dir);
 }

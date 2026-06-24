@@ -4,7 +4,7 @@ use crate::{
 };
 
 pub fn run() -> Result<(), String> {
-    let config = cli::parse_args()?;
+    let config = cli::parse_args(vault::default_vault_path()?)?;
 
     match config.mode {
         Mode::Listen => {

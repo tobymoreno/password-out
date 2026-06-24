@@ -109,6 +109,7 @@ pub struct VaultEntry {
 }
 
 impl VaultEnvelope {
+    #[allow(dead_code)]
     pub fn version(&self) -> u32 {
         match self {
             Self::V1(envelope) => envelope.version,

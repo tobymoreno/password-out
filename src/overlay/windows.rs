@@ -5,18 +5,17 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_VCENTER, DeleteObject,
-    DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, PAINTSTRUCT, ReleaseDC, SelectObject,
-    SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
+    DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, InvalidateRect, PAINTSTRUCT, ReleaseDC,
+    SelectObject, SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-    GetClientRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, InvalidateRect,
-    KillTimer, LWA_COLORKEY, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SM_CXSCREEN,
-    SM_CYSCREEN, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
-    ShowWindow, TranslateMessage, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_TIMER,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    GetClientRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, KillTimer,
+    LWA_COLORKEY, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN,
+    SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, ShowWindow,
+    TranslateMessage, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_TIMER, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const MAX_FONT_SIZE: i32 = 120;

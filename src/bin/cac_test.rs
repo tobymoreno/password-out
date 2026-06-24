@@ -2,12 +2,14 @@ use std::io::{self, Write};
 
 use anyhow::{Context as _, Result, bail};
 
+use zeroize::Zeroizing;
+
 use password_out::smartcard::{
     certificate::{
         CertificateInfo, decode_certificate, display_certificate, parse_certificate_info,
     },
     pcsc::connect_first_card,
-    piv::{PivCertificate, PivSlot, read_certificate, select_piv},
+    piv::{PivCertificate, PivSlot, read_certificate, select_piv, verify_pin},
 };
 
 struct CertificateCandidate {
@@ -134,7 +136,17 @@ fn main() -> Result<()> {
     );
 
     println!();
-    println!("No PIN operation was performed.");
+    println!("The CAC PIN will be verified once.");
+    println!("An incorrect PIN will not be retried automatically.");
+
+    let pin = prompt_cac_pin()?;
+
+    verify_pin(&card, pin.as_str()).context("CAC PIN verification failed")?;
+
+    drop(pin);
+
+    println!();
+    println!("CAC PIN verified successfully.");
     println!("No vault key was encrypted or decrypted.");
     println!("Certificate-chain trust has not yet been evaluated.");
 
@@ -224,4 +236,24 @@ fn prompt_for_candidate(
 
         return Ok(suitable_indices[choice - 1]);
     }
+}
+
+fn prompt_cac_pin() -> Result<Zeroizing<String>> {
+    print!("CAC PIN: ");
+
+    io::stdout()
+        .flush()
+        .context("failed to flush CAC PIN prompt")?;
+
+    let pin = rpassword::read_password().context("failed to read CAC PIN")?;
+
+    if !(6..=8).contains(&pin.len()) {
+        bail!("CAC PIN must contain between 6 and 8 digits");
+    }
+
+    if !pin.bytes().all(|value| value.is_ascii_digit()) {
+        bail!("CAC PIN must contain only ASCII digits");
+    }
+
+    Ok(Zeroizing::new(pin))
 }

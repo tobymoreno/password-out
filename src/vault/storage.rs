@@ -182,12 +182,13 @@ fn set_directory_permissions(_path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::vault::format::{
-        CIPHER_ALGORITHM, CipherPayload, KDF_ALGORITHM, KdfParameters, VAULT_FORMAT_VERSION,
+        CIPHER_ALGORITHM, CipherPayload, KDF_ALGORITHM, KdfParameters, VAULT_FORMAT_VERSION_V1,
+        VaultEnvelopeV1,
     };
 
     fn sample_envelope() -> VaultEnvelope {
-        VaultEnvelope {
-            version: VAULT_FORMAT_VERSION,
+        VaultEnvelope::V1(VaultEnvelopeV1 {
+            version: VAULT_FORMAT_VERSION_V1,
             kdf: KdfParameters {
                 algorithm: KDF_ALGORITHM.to_string(),
                 memory_kib: 65_536,
@@ -200,7 +201,7 @@ mod tests {
                 nonce: "bm9uY2U".to_string(),
                 ciphertext: "Y2lwaGVydGV4dA".to_string(),
             },
-        }
+        })
     }
 
     #[test]

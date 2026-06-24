@@ -156,10 +156,9 @@ fn ensure_vault_does_not_exist(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        entries::add_entry,
-        vault::{VAULT_FORMAT_VERSION_V2, VaultEnvelope, VaultUnlockMethod, read_envelope},
-    };
+    use crate::entries::add_entry;
+    use crate::vault::format::{VAULT_FORMAT_VERSION_V2, VaultEnvelope, VaultUnlockMethod};
+    use crate::vault::read_envelope;
 
     #[test]
     fn initializes_loads_and_saves_password_vault() {
@@ -238,7 +237,8 @@ mod tests {
         let path = test_dir.join("vault.json");
         let password = "correct horse battery staple";
 
-        initialize_vault(&path, password).expect("compatibility initialization should succeed");
+        initialize_password_vault(&path, password)
+            .expect("compatibility initialization should succeed");
 
         let payload = load_vault(&path, password).expect("compatibility load should succeed");
 

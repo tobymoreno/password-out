@@ -8,8 +8,9 @@ use rand::{RngCore, rngs::OsRng};
 use zeroize::Zeroize;
 
 use super::format::{
-    CIPHER_ALGORITHM, CipherPayload, KDF_ALGORITHM, KdfParameters, VAULT_FORMAT_VERSION,
-    VaultEnvelope, VaultPayload,
+    CIPHER_ALGORITHM, CURRENT_VAULT_FORMAT_VERSION, CipherPayload, KDF_ALGORITHM, KdfParameters,
+    PasswordKeyWrapper, VAULT_FORMAT_VERSION_V1, VaultEnvelope, VaultEnvelopeV1, VaultEnvelopeV2,
+    VaultPayload, VaultUnlockMethod,
 };
 
 const KEY_LENGTH: usize = 32;
@@ -20,40 +21,101 @@ const DEFAULT_MEMORY_KIB: u32 = 65_536;
 const DEFAULT_ITERATIONS: u32 = 3;
 const DEFAULT_PARALLELISM: u32 = 1;
 
+/// Creates a new version-2 password vault.
+///
+/// A random vault key encrypts the payload. Argon2id derives a separate
+/// key-encryption key that protects the random vault key.
 pub fn encrypt_payload(
     payload: &VaultPayload,
     master_password: &str,
 ) -> Result<VaultEnvelope, String> {
-    validate_master_password(master_password)?;
+    validate_password(master_password, "master password")?;
 
     let plaintext = serde_json::to_vec(payload)
         .map_err(|error| format!("failed to serialize vault payload: {error}"))?;
 
+    let mut vault_key = random_key();
+
+    let payload_cipher = encrypt_bytes(&plaintext, &vault_key)
+        .map_err(|error| format!("failed to encrypt vault payload: {error}"))?;
+
+    let password_wrapper = create_password_wrapper(&vault_key, master_password)?;
+
+    vault_key.zeroize();
+
+    Ok(VaultEnvelope::V2(VaultEnvelopeV2 {
+        version: CURRENT_VAULT_FORMAT_VERSION,
+        unlock: VaultUnlockMethod::Password {
+            wrapper: password_wrapper,
+        },
+        cipher: payload_cipher,
+    }))
+}
+
+/// Decrypts either:
+///
+/// - an existing version-1 password vault; or
+/// - a version-2 password vault.
+///
+/// CAC vaults require a separate CAC or backup-password unlock path.
+pub fn decrypt_payload(
+    envelope: &VaultEnvelope,
+    master_password: &str,
+) -> Result<VaultPayload, String> {
+    validate_password(master_password, "master password")?;
+    envelope.validate()?;
+
+    match envelope {
+        VaultEnvelope::V1(envelope) => decrypt_v1_payload(envelope, master_password),
+
+        VaultEnvelope::V2(envelope) => match &envelope.unlock {
+            VaultUnlockMethod::Password { wrapper } => {
+                let mut vault_key = unwrap_key_with_password(wrapper, master_password)?;
+
+                let result = decrypt_payload_with_key(&envelope.cipher, &vault_key);
+
+                vault_key.zeroize();
+                result
+            }
+
+            VaultUnlockMethod::Cac { .. } => Err(
+                "this vault uses CAC unlock; use the CAC or backup-password recovery flow"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+/// Creates an Argon2id/XChaCha20-Poly1305 wrapper for a vault key.
+///
+/// This is used for:
+///
+/// - password-mode vaults; and
+/// - the recovery-password wrapper for CAC-mode vaults.
+pub fn create_password_wrapper(
+    vault_key: &[u8; KEY_LENGTH],
+    password: &str,
+) -> Result<PasswordKeyWrapper, String> {
+    validate_password(password, "password")?;
+
     let mut salt = [0_u8; SALT_LENGTH];
     OsRng.fill_bytes(&mut salt);
 
-    let mut key = derive_key(
-        master_password,
+    let mut wrapping_key = derive_key(
+        password,
         &salt,
         DEFAULT_MEMORY_KIB,
         DEFAULT_ITERATIONS,
         DEFAULT_PARALLELISM,
     )?;
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| "failed to initialize vault cipher".to_string())?;
+    let cipher_result = encrypt_bytes(vault_key, &wrapping_key);
 
-    let mut nonce = [0_u8; NONCE_LENGTH];
-    OsRng.fill_bytes(&mut nonce);
+    wrapping_key.zeroize();
 
-    let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
-        .map_err(|_| "failed to encrypt vault payload".to_string())?;
+    let cipher = cipher_result.map_err(|error| format!("failed to wrap vault key: {error}"))?;
 
-    key.zeroize();
-
-    Ok(VaultEnvelope {
-        version: VAULT_FORMAT_VERSION,
+    Ok(PasswordKeyWrapper {
         kdf: KdfParameters {
             algorithm: KDF_ALGORITHM.to_string(),
             memory_kib: DEFAULT_MEMORY_KIB,
@@ -61,27 +123,95 @@ pub fn encrypt_payload(
             parallelism: DEFAULT_PARALLELISM,
             salt: STANDARD_NO_PAD.encode(salt),
         },
-        cipher: CipherPayload {
-            algorithm: CIPHER_ALGORITHM.to_string(),
-            nonce: STANDARD_NO_PAD.encode(nonce),
-            ciphertext: STANDARD_NO_PAD.encode(ciphertext),
-        },
+        cipher,
     })
 }
 
-pub fn decrypt_payload(
-    envelope: &VaultEnvelope,
+/// Recovers a vault key from an Argon2id password wrapper.
+pub fn unwrap_key_with_password(
+    wrapper: &PasswordKeyWrapper,
+    password: &str,
+) -> Result<[u8; KEY_LENGTH], String> {
+    validate_password(password, "password")?;
+    wrapper.validate("password wrapper")?;
+
+    let salt = decode_exact::<SALT_LENGTH>("password-wrapper salt", &wrapper.kdf.salt)?;
+
+    let mut wrapping_key = derive_key(
+        password,
+        &salt,
+        wrapper.kdf.memory_kib,
+        wrapper.kdf.iterations,
+        wrapper.kdf.parallelism,
+    )?;
+
+    let plaintext_result = decrypt_bytes(&wrapper.cipher, &wrapping_key);
+
+    wrapping_key.zeroize();
+
+    let mut plaintext = plaintext_result.map_err(|_| {
+        "unable to unlock vault key: incorrect password or damaged wrapper".to_string()
+    })?;
+
+    let key_result = plaintext.as_slice().try_into().map_err(|_| {
+        format!(
+            "unwrapped vault key has invalid length {}; expected {}",
+            plaintext.len(),
+            KEY_LENGTH
+        )
+    });
+
+    plaintext.zeroize();
+
+    key_result
+}
+
+/// Encrypts a payload using a caller-provided vault key.
+///
+/// This will also be used when CAC mode creates a random vault key.
+pub fn encrypt_payload_with_key(
+    payload: &VaultPayload,
+    vault_key: &[u8; KEY_LENGTH],
+) -> Result<CipherPayload, String> {
+    let plaintext = serde_json::to_vec(payload)
+        .map_err(|error| format!("failed to serialize vault payload: {error}"))?;
+
+    encrypt_bytes(&plaintext, vault_key)
+        .map_err(|error| format!("failed to encrypt vault payload: {error}"))
+}
+
+/// Decrypts a payload using an already recovered vault key.
+pub fn decrypt_payload_with_key(
+    cipher_payload: &CipherPayload,
+    vault_key: &[u8; KEY_LENGTH],
+) -> Result<VaultPayload, String> {
+    let mut plaintext = decrypt_bytes(cipher_payload, vault_key)
+        .map_err(|_| "unable to decrypt vault: incorrect key or damaged vault".to_string())?;
+
+    let result = serde_json::from_slice(&plaintext)
+        .map_err(|error| format!("decrypted vault payload is invalid: {error}"));
+
+    plaintext.zeroize();
+    result
+}
+
+/// Generates a new random 256-bit vault key.
+pub fn generate_vault_key() -> [u8; KEY_LENGTH] {
+    random_key()
+}
+
+fn decrypt_v1_payload(
+    envelope: &VaultEnvelopeV1,
     master_password: &str,
 ) -> Result<VaultPayload, String> {
-    validate_master_password(master_password)?;
-    envelope.validate()?;
+    if envelope.version != VAULT_FORMAT_VERSION_V1 {
+        return Err(format!(
+            "unsupported version-1 vault value {}",
+            envelope.version
+        ));
+    }
 
     let salt = decode_exact::<SALT_LENGTH>("salt", &envelope.kdf.salt)?;
-    let nonce = decode_exact::<NONCE_LENGTH>("nonce", &envelope.cipher.nonce)?;
-
-    let ciphertext = STANDARD_NO_PAD
-        .decode(&envelope.cipher.ciphertext)
-        .map_err(|error| format!("vault ciphertext is not valid base64: {error}"))?;
 
     let mut key = derive_key(
         master_password,
@@ -91,23 +221,72 @@ pub fn decrypt_payload(
         envelope.kdf.parallelism,
     )?;
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| "failed to initialize vault cipher".to_string())?;
+    let mut plaintext = match decrypt_bytes(&envelope.cipher, &key) {
+        Ok(plaintext) => plaintext,
+        Err(_) => {
+            key.zeroize();
 
-    let plaintext_result = cipher.decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref());
+            return Err(
+                "unable to decrypt vault: incorrect master password or damaged vault".to_string(),
+            );
+        }
+    };
 
     key.zeroize();
 
-    let plaintext = plaintext_result.map_err(|_| {
-        "unable to decrypt vault: incorrect master password or damaged vault".to_string()
-    })?;
+    let result = serde_json::from_slice(&plaintext)
+        .map_err(|error| format!("decrypted vault payload is invalid: {error}"));
 
-    serde_json::from_slice(&plaintext)
-        .map_err(|error| format!("decrypted vault payload is invalid: {error}"))
+    plaintext.zeroize();
+    result
+}
+
+fn encrypt_bytes(plaintext: &[u8], key: &[u8; KEY_LENGTH]) -> Result<CipherPayload, String> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| "failed to initialize cipher".to_string())?;
+
+    let mut nonce = [0_u8; NONCE_LENGTH];
+    OsRng.fill_bytes(&mut nonce);
+
+    let ciphertext = cipher
+        .encrypt(XNonce::from_slice(&nonce), plaintext)
+        .map_err(|_| "encryption operation failed".to_string())?;
+
+    Ok(CipherPayload {
+        algorithm: CIPHER_ALGORITHM.to_string(),
+        nonce: STANDARD_NO_PAD.encode(nonce),
+        ciphertext: STANDARD_NO_PAD.encode(ciphertext),
+    })
+}
+
+fn decrypt_bytes(
+    cipher_payload: &CipherPayload,
+    key: &[u8; KEY_LENGTH],
+) -> Result<Vec<u8>, String> {
+    cipher_payload.validate("cipher payload")?;
+
+    let nonce = decode_exact::<NONCE_LENGTH>("nonce", &cipher_payload.nonce)?;
+
+    let ciphertext = STANDARD_NO_PAD
+        .decode(&cipher_payload.ciphertext)
+        .map_err(|error| format!("ciphertext is not valid base64: {error}"))?;
+
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| "failed to initialize cipher".to_string())?;
+
+    cipher
+        .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
+        .map_err(|_| "decryption operation failed".to_string())
+}
+
+fn random_key() -> [u8; KEY_LENGTH] {
+    let mut key = [0_u8; KEY_LENGTH];
+    OsRng.fill_bytes(&mut key);
+    key
 }
 
 fn derive_key(
-    master_password: &str,
+    password: &str,
     salt: &[u8],
     memory_kib: u32,
     iterations: u32,
@@ -117,10 +296,11 @@ fn derive_key(
         .map_err(|error| format!("invalid Argon2 parameters: {error}"))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
     let mut key = [0_u8; KEY_LENGTH];
 
     argon2
-        .hash_password_into(master_password.as_bytes(), salt, &mut key)
+        .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|error| format!("failed to derive vault key: {error}"))?;
 
     Ok(key)
@@ -139,9 +319,9 @@ fn decode_exact<const N: usize>(field_name: &str, encoded: &str) -> Result<[u8; 
     })
 }
 
-fn validate_master_password(master_password: &str) -> Result<(), String> {
-    if master_password.is_empty() {
-        return Err("master password cannot be empty".to_string());
+fn validate_password(password: &str, description: &str) -> Result<(), String> {
+    if password.is_empty() {
+        return Err(format!("{description} cannot be empty"));
     }
 
     Ok(())
@@ -150,7 +330,7 @@ fn validate_master_password(master_password: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::format::VaultEntry;
+    use crate::vault::format::{VAULT_FORMAT_VERSION_V2, VaultEntry, VaultUnlockMethod};
 
     fn sample_payload() -> VaultPayload {
         VaultPayload {
@@ -163,8 +343,30 @@ mod tests {
     }
 
     #[test]
-    fn encrypts_and_decrypts_payload() {
+    fn encrypts_new_password_vault_as_version_2() {
+        let envelope = encrypt_payload(&sample_payload(), "correct horse battery staple")
+            .expect("encryption should succeed");
+
+        match envelope {
+            VaultEnvelope::V2(envelope) => {
+                assert_eq!(envelope.version, VAULT_FORMAT_VERSION_V2);
+
+                assert!(matches!(
+                    envelope.unlock,
+                    VaultUnlockMethod::Password { .. }
+                ));
+            }
+
+            VaultEnvelope::V1(_) => {
+                panic!("new vault unexpectedly used version 1")
+            }
+        }
+    }
+
+    #[test]
+    fn encrypts_and_decrypts_password_vault() {
         let payload = sample_payload();
+
         let envelope = encrypt_payload(&payload, "correct horse battery staple")
             .expect("encryption should succeed");
 
@@ -185,14 +387,37 @@ mod tests {
     }
 
     #[test]
-    fn detects_tampered_ciphertext() {
+    fn detects_tampered_v2_payload_ciphertext() {
         let mut envelope = encrypt_payload(&sample_payload(), "correct-password")
             .expect("encryption should succeed");
 
-        envelope.cipher.ciphertext.push('A');
+        match &mut envelope {
+            VaultEnvelope::V2(version_2) => {
+                version_2.cipher.ciphertext.push('A');
+            }
+
+            VaultEnvelope::V1(_) => {
+                panic!("expected version-2 vault");
+            }
+        }
 
         let result = decrypt_payload(&envelope, "correct-password");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn password_wrapper_round_trip() {
+        let mut vault_key = generate_vault_key();
+
+        let wrapper = create_password_wrapper(&vault_key, "recovery-password")
+            .expect("wrapper creation should succeed");
+
+        let recovered = unwrap_key_with_password(&wrapper, "recovery-password")
+            .expect("wrapper unlock should succeed");
+
+        assert_eq!(recovered, vault_key);
+
+        vault_key.zeroize();
     }
 }

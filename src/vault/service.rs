@@ -1,13 +1,16 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use password_out::certificate::{
-    CertificateSource, KeyWrapAlgorithm, certificate_identity_from_der, wrap_key_with_certificate,
+    CertificateKeyProvider, CertificateSource, KeyWrapAlgorithm, certificate_identity_from_der,
+    unwrap_key_with_provider, wrap_key_with_certificate,
 };
 
 use std::path::Path;
 
 use zeroize::Zeroize;
 
-use super::crypto::{create_password_wrapper, encrypt_payload_with_key, generate_vault_key};
+use super::crypto::{
+    create_password_wrapper, decrypt_payload_with_key, encrypt_payload_with_key, generate_vault_key,
+};
 use super::format::{
     CURRENT_VAULT_FORMAT_VERSION, CacKeyWrapper, CertificateBackend, CertificateKeyWrapper,
     VaultEnvelope, VaultEnvelopeV2, VaultUnlockMethod,
@@ -130,6 +133,67 @@ pub fn initialize_certificate_vault(
         write_envelope(path, &envelope)
     })();
 
+    vault_key.zeroize();
+
+    result
+}
+
+/// Loads a generic X.509 certificate-protected vault.
+///
+/// The provider supplies both the certificate identity and the private-key
+/// operation. The vault service verifies that the provider certificate matches
+/// the identity recorded in the vault before decrypting the wrapped vault key.
+pub fn load_certificate_vault(
+    path: &Path,
+    provider: &mut dyn CertificateKeyProvider,
+) -> Result<VaultPayload, String> {
+    let envelope = read_envelope(path)?;
+
+    let VaultEnvelope::V2(version_2) = envelope else {
+        return Err("version-1 vaults do not support certificate unlock".to_string());
+    };
+
+    let VaultUnlockMethod::Certificate {
+        certificate_wrapper,
+        ..
+    } = &version_2.unlock
+    else {
+        return match &version_2.unlock {
+            VaultUnlockMethod::Password { .. } => Err(
+                "this vault uses password unlock; use the password unlock command".to_string(),
+            ),
+            VaultUnlockMethod::Cac { .. } => Err(
+                "this vault uses the legacy CAC format; use the CAC unlock or backup recovery command"
+                    .to_string(),
+            ),
+            VaultUnlockMethod::Certificate { .. } => unreachable!(),
+        };
+    };
+
+    let wrapped_key = STANDARD
+        .decode(&certificate_wrapper.wrapped_key)
+        .map_err(|error| format!("certificate-wrapped vault key is not valid base64: {error}"))?;
+
+    let mut unwrapped_key = unwrap_key_with_provider(
+        provider,
+        &certificate_wrapper.identity,
+        certificate_wrapper.algorithm,
+        &wrapped_key,
+    )?;
+
+    if unwrapped_key.len() != 32 {
+        unwrapped_key.zeroize();
+        return Err(format!(
+            "certificate provider returned a {}-byte vault key; expected 32 bytes",
+            unwrapped_key.len()
+        ));
+    }
+
+    let mut vault_key = [0_u8; 32];
+    vault_key.copy_from_slice(&unwrapped_key);
+    unwrapped_key.zeroize();
+
+    let result = decrypt_payload_with_key(&version_2.cipher, &vault_key);
     vault_key.zeroize();
 
     result
@@ -319,11 +383,9 @@ mod tests {
 #[test]
 fn initializes_and_unlocks_certificate_vault_with_pfx_provider() {
     use super::*;
-    use base64::Engine as _;
     use password_out::certificate::{
         CertificateSource, KeyWrapAlgorithm, PfxKeyProvider, SelfSignedCertificateOptions,
         certificate_identity_from_der, create_self_signed_pfx, load_pfx_der,
-        unwrap_key_with_provider,
     };
 
     use crate::vault::format::CertificateBackend;
@@ -396,19 +458,10 @@ fn initializes_and_unlocks_certificate_vault_with_pfx_provider() {
         expected_identity.sha256_fingerprint
     );
 
-    let wrapped_key = base64::engine::general_purpose::STANDARD
-        .decode(&certificate_wrapper.wrapped_key)
-        .expect("wrapped key should be valid base64");
+    let payload = load_certificate_vault(&vault_path, &mut provider)
+        .expect("matching PFX provider should unlock the certificate vault");
 
-    let vault_key = unwrap_key_with_provider(
-        &mut provider,
-        &certificate_wrapper.identity,
-        certificate_wrapper.algorithm,
-        &wrapped_key,
-    )
-    .expect("matching PFX provider should unwrap the vault key");
-
-    assert_eq!(vault_key.len(), 32);
+    assert!(payload.entries.is_empty());
 
     let _ = std::fs::remove_dir_all(test_dir);
 }

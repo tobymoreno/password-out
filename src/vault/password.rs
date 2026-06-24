@@ -17,6 +17,7 @@ pub fn prompt_new_master_password() -> Result<Zeroizing<String>, String> {
     Ok(password)
 }
 
+#[allow(dead_code)]
 pub fn prompt_cac_pin() -> Result<Zeroizing<String>, String> {
     let pin = read_hidden_value("CAC PIN: ", "CAC PIN")?;
 

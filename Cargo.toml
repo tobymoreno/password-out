@@ -5,6 +5,11 @@ edition = "2024"
 license = "Apache-2.0"
 description = "A cross-platform, hotkey-driven credential manager"
 repository = "https://github.com/tobymoreno/password-out"
+default-run = "password-out"
+authors = [
+    "PITT Crew: Roland, Toby, Paul, and Joey",
+]
+
 
 [dependencies]
 argon2 = "0.5"
@@ -40,11 +45,21 @@ windows-sys = { version = "0.61", features = [
 "Win32_System_LibraryLoader",
 ] }
 
+
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(cargo_clippy)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 
 
 
 
 
+
+
+
+
+
+
+
+[dev-dependencies]
+clap_mangen = "0.2"

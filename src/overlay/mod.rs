@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 #[cfg(target_os = "macos")]
 mod macos;
 

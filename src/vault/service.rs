@@ -85,6 +85,7 @@ where
 /// A fresh random vault key encrypts the payload. The vault key is wrapped
 /// using the supplied X.509 certificate and is also protected by a backup
 /// password for recovery.
+#[allow(dead_code)]
 pub fn initialize_certificate_vault(
     path: &Path,
     backup_password: &str,
@@ -143,6 +144,7 @@ pub fn initialize_certificate_vault(
 /// The provider supplies both the certificate identity and the private-key
 /// operation. The vault service verifies that the provider certificate matches
 /// the identity recorded in the vault before decrypting the wrapped vault key.
+#[allow(dead_code)]
 pub fn load_certificate_vault(
     path: &Path,
     provider: &mut dyn CertificateKeyProvider,

@@ -24,6 +24,7 @@ pub trait VaultAccess {
 ///
 /// It can also simulate load and save failures so command behavior can be
 /// tested without real vault files or cryptographic providers.
+#[cfg(any(test, feature = "dev-tools"))]
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryVaultAccess {
     payload: VaultPayload,
@@ -33,6 +34,7 @@ pub struct InMemoryVaultAccess {
     fail_save: Option<String>,
 }
 
+#[cfg(any(test, feature = "dev-tools"))]
 impl InMemoryVaultAccess {
     pub fn new(payload: VaultPayload) -> Self {
         Self {
@@ -65,6 +67,7 @@ impl InMemoryVaultAccess {
     }
 }
 
+#[cfg(any(test, feature = "dev-tools"))]
 impl VaultAccess for InMemoryVaultAccess {
     fn load(&mut self, _path: &Path) -> Result<VaultPayload, String> {
         self.load_count += 1;
@@ -139,6 +142,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub fn has_active_session(&self) -> bool {
         self.session.is_some()
     }

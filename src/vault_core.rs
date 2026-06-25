@@ -21,7 +21,10 @@ pub mod service;
 #[path = "vault/storage.rs"]
 pub mod storage;
 
-pub use access::{InMemoryVaultAccess, PasswordVaultAccess, VaultAccess};
+pub use access::{CertificateVaultAccess, PasswordVaultAccess, VaultAccess};
+
+#[cfg(any(test, feature = "dev-tools"))]
+pub use access::InMemoryVaultAccess;
 
 pub use crypto::{decrypt_payload, encrypt_payload};
 

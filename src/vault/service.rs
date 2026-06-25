@@ -250,6 +250,7 @@ pub fn save_certificate_vault_session(
 
 /// Loads a generic X.509 certificate-protected vault without retaining a save
 /// session.
+#[allow(dead_code)]
 pub fn load_certificate_vault(
     path: &Path,
     provider: &mut dyn CertificateKeyProvider,
@@ -328,6 +329,7 @@ pub fn load_vault(path: &Path, master_password: &str) -> Result<VaultPayload, St
 /// Backward-compatible name used by the existing CLI.
 ///
 /// This currently means password-based saving.
+#[allow(dead_code)]
 pub fn save_vault(
     path: &Path,
     payload: &VaultPayload,

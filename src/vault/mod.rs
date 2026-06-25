@@ -10,7 +10,9 @@ pub mod password;
 pub mod service;
 pub mod storage;
 
-pub use commands::{run_add, run_init, run_list, run_recover, run_remove, run_rotate_certificate};
+pub use commands::{
+    run_add, run_info, run_init, run_list, run_recover, run_remove, run_rotate_certificate,
+};
 pub use crypto::{decrypt_payload, encrypt_payload};
 pub use format::{VaultEntry, VaultPayload};
 pub use password::{prompt_master_password, prompt_new_master_password};

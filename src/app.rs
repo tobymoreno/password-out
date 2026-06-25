@@ -30,6 +30,8 @@ pub fn run() -> Result<(), String> {
 
         Mode::VaultRotateCertificate => vault::run_rotate_certificate(&config.vault_file),
 
+        Mode::VaultInfo => vault::run_info(&config.vault_file),
+
         Mode::EntryAdd => vault::run_add(&config.vault_file),
 
         Mode::EntryList => vault::run_list(&config.vault_file),

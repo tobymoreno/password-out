@@ -229,6 +229,157 @@ fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
     )
 }
 
+pub fn run_info(path: &Path) -> Result<(), String> {
+    let envelope = read_envelope(path)?;
+    envelope.validate()?;
+
+    println!("PasswordOut vault information:");
+    println!("  Path: {}", path.display());
+
+    match envelope {
+        VaultEnvelope::V1(version_1) => {
+            println!("  Format version: {}", version_1.version);
+            println!("  Unlock method: Master password");
+            println!("  Payload cipher: {}", version_1.cipher.algorithm);
+            println!("  Password KDF: {}", version_1.kdf.algorithm);
+            println!("  Backup recovery: Not configured");
+        }
+
+        VaultEnvelope::V2(version_2) => {
+            println!("  Format version: {}", version_2.version);
+            println!("  Payload cipher: {}", version_2.cipher.algorithm);
+
+            match version_2.unlock {
+                VaultUnlockMethod::Password { wrapper } => {
+                    println!("  Unlock method: Master password");
+                    println!("  Password KDF: {}", wrapper.kdf.algorithm);
+                    println!("  Backup recovery: Not configured");
+                }
+
+                VaultUnlockMethod::Cac {
+                    cac_wrapper,
+                    backup_wrapper,
+                } => {
+                    println!("  Unlock method: CAC / PIV smart card (legacy format)");
+                    println!("  Certificate backend: CAC / PIV");
+                    println!("  PIV slot: {}", cac_wrapper.slot);
+                    println!("  Certificate SHA-256: {}", cac_wrapper.certificate_sha256);
+                    println!("  Key-wrap algorithm: {}", cac_wrapper.algorithm);
+                    println!("  Backup recovery: Configured");
+                    println!("  Backup KDF: {}", backup_wrapper.kdf.algorithm);
+                }
+
+                VaultUnlockMethod::Certificate {
+                    certificate_wrapper,
+                    backup_wrapper,
+                } => {
+                    println!("  Unlock method: X.509 certificate");
+
+                    match certificate_wrapper.backend {
+                        CertificateBackend::Pfx { suggested_filename } => {
+                            println!("  Certificate backend: Software PFX");
+
+                            match suggested_filename {
+                                Some(filename) => {
+                                    println!("  Suggested PFX: {filename}");
+                                }
+
+                                None => {
+                                    println!("  Suggested PFX: Not recorded");
+                                }
+                            }
+                        }
+
+                        CertificateBackend::Cac { slot } => {
+                            println!("  Certificate backend: CAC / PIV");
+                            println!("  PIV slot: {slot}");
+                        }
+                    }
+
+                    println!(
+                        "  Key-wrap algorithm: {}",
+                        match certificate_wrapper.algorithm {
+                            password_out::certificate::KeyWrapAlgorithm::RsaOaepSha256 => {
+                                "rsa-oaep-sha256"
+                            }
+                        }
+                    );
+
+                    print_certificate_identity(&certificate_wrapper.identity)?;
+
+                    println!("  Backup recovery: Configured");
+                    println!("  Backup KDF: {}", backup_wrapper.kdf.algorithm);
+                }
+            }
+        }
+    }
+
+    println!("  Entry count: Encrypted; unlock the vault to inspect entries");
+
+    Ok(())
+}
+
+fn print_certificate_identity<T>(identity: &T) -> Result<(), String>
+where
+    T: serde::Serialize,
+{
+    let value = serde_json::to_value(identity)
+        .map_err(|error| format!("failed to format certificate identity: {error}"))?;
+
+    let object = value.as_object().ok_or_else(|| {
+        "certificate identity has an invalid serialized representation".to_string()
+    })?;
+
+    print_identity_field(object, &["subject"], "Certificate subject");
+
+    print_identity_field(object, &["issuer"], "Certificate issuer");
+
+    print_identity_field(object, &["serial", "serial_number"], "Certificate serial");
+
+    print_identity_field(
+        object,
+        &[
+            "sha256",
+            "sha256_fingerprint",
+            "fingerprint_sha256",
+            "certificate_sha256",
+        ],
+        "Certificate SHA-256",
+    );
+
+    print_identity_field(
+        object,
+        &["not_before", "valid_from"],
+        "Certificate valid from",
+    );
+
+    print_identity_field(
+        object,
+        &["not_after", "valid_until"],
+        "Certificate valid until",
+    );
+
+    Ok(())
+}
+
+fn print_identity_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    label: &str,
+) {
+    for key in keys {
+        if let Some(value) = object.get(*key) {
+            if let Some(text) = value.as_str() {
+                println!("  {label}: {text}");
+                return;
+            }
+
+            println!("  {label}: {value}");
+            return;
+        }
+    }
+}
+
 pub fn run_rotate_certificate(path: &Path) -> Result<(), String> {
     println!("Rotate the certificate protecting this vault.");
     println!("The credential payload and backup password will remain unchanged.");

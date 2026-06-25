@@ -22,7 +22,8 @@ use super::service::{
 };
 use super::{
     add_entry_with_access, list_entries_with_access, prompt_master_password,
-    prompt_new_master_password, read_envelope, remove_entry_with_access,
+    prompt_new_master_password, read_envelope, recover_vault_with_backup_password,
+    remove_entry_with_access,
 };
 
 pub fn run_init(path: &Path) -> Result<(), String> {
@@ -225,6 +226,23 @@ fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
                 .map(|name| name.to_string_lossy().into_owned()),
         },
     )
+}
+
+pub fn run_recover(path: &Path) -> Result<(), String> {
+    println!("Recovering the vault through its backup-password wrapper.");
+    println!("The existing certificate/CAC protection will remain unchanged.");
+    println!();
+
+    let backup_password = prompt_master_password("Backup password: ")?;
+
+    let payload = recover_vault_with_backup_password(path, backup_password.as_str())?;
+
+    println!();
+    println!("Vault recovery successful.");
+    println!("  Entries recovered: {}", payload.entries.len());
+    println!("  Vault protection: unchanged");
+
+    Ok(())
 }
 
 pub fn run_add(path: &Path) -> Result<(), String> {

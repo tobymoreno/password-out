@@ -9,7 +9,8 @@ use std::path::Path;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::crypto::{
-    create_password_wrapper, decrypt_payload_with_key, encrypt_payload_with_key, generate_vault_key,
+    create_password_wrapper, decrypt_payload_with_key, encrypt_payload_with_key,
+    generate_vault_key, unwrap_key_with_password,
 };
 use super::format::{
     CURRENT_VAULT_FORMAT_VERSION, CacKeyWrapper, CertificateBackend, CertificateKeyWrapper,
@@ -257,6 +258,41 @@ pub fn load_certificate_vault(
 ) -> Result<VaultPayload, String> {
     let (payload, _session) = open_certificate_vault_session(path, provider)?;
     Ok(payload)
+}
+
+/// Opens a certificate or legacy CAC vault using its backup password.
+///
+/// This recovers the same random vault key that is normally unwrapped through
+/// the certificate private key and decrypts the payload without changing the
+/// vault file or any protection wrappers.
+pub fn recover_vault_with_backup_password(
+    path: &Path,
+    backup_password: &str,
+) -> Result<VaultPayload, String> {
+    let envelope = read_envelope(path)?;
+
+    let VaultEnvelope::V2(version_2) = envelope else {
+        return Err("version-1 vaults do not contain a backup-password wrapper".to_string());
+    };
+
+    let mut vault_key = match &version_2.unlock {
+        VaultUnlockMethod::Password { .. } => {
+            return Err(
+                "this vault uses normal password protection and does not require recovery"
+                    .to_string(),
+            );
+        }
+
+        VaultUnlockMethod::Cac { backup_wrapper, .. }
+        | VaultUnlockMethod::Certificate { backup_wrapper, .. } => {
+            unwrap_key_with_password(backup_wrapper, backup_password)?
+        }
+    };
+
+    let result = decrypt_payload_with_key(&version_2.cipher, &vault_key);
+
+    vault_key.zeroize();
+    result
 }
 
 /// Loads a password-unlocked vault.

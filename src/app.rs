@@ -26,6 +26,8 @@ pub fn run() -> Result<(), String> {
 
         Mode::VaultInit => vault::run_init(&config.vault_file),
 
+        Mode::VaultRecover => vault::run_recover(&config.vault_file),
+
         Mode::EntryAdd => vault::run_add(&config.vault_file),
 
         Mode::EntryList => vault::run_list(&config.vault_file),

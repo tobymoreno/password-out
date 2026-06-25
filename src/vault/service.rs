@@ -13,8 +13,8 @@ use super::crypto::{
     generate_vault_key, unwrap_key_with_password,
 };
 use super::format::{
-    CURRENT_VAULT_FORMAT_VERSION, CacKeyWrapper, CertificateBackend, CertificateKeyWrapper,
-    VaultEnvelope, VaultEnvelopeV2, VaultUnlockMethod,
+    CURRENT_VAULT_FORMAT_VERSION, CertificateBackend, CertificateKeyWrapper, VaultEnvelope,
+    VaultEnvelopeV2, VaultUnlockMethod,
 };
 use super::{VaultPayload, decrypt_payload, encrypt_payload, read_envelope, write_envelope};
 
@@ -41,46 +41,6 @@ pub fn initialize_password_vault(path: &Path, master_password: &str) -> Result<(
 /// - wrapped again using the Argon2id-derived backup-password key.
 ///
 /// The callback keeps the vault service independent from PC/SC and
-/// smart-card certificate handling.
-pub fn initialize_cac_vault<F>(
-    path: &Path,
-    backup_password: &str,
-    wrap_with_cac: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&[u8]) -> Result<CacKeyWrapper, String>,
-{
-    ensure_vault_does_not_exist(path)?;
-
-    let payload = VaultPayload::default();
-    let mut vault_key = generate_vault_key();
-
-    let result = (|| {
-        let cipher = encrypt_payload_with_key(&payload, &vault_key)?;
-
-        let cac_wrapper = wrap_with_cac(&vault_key)?;
-        cac_wrapper.validate()?;
-
-        let backup_wrapper = create_password_wrapper(&vault_key, backup_password)?;
-
-        let envelope = VaultEnvelope::V2(VaultEnvelopeV2 {
-            version: CURRENT_VAULT_FORMAT_VERSION,
-            unlock: VaultUnlockMethod::Cac {
-                cac_wrapper,
-                backup_wrapper,
-            },
-            cipher,
-        });
-
-        envelope.validate()?;
-        write_envelope(path, &envelope)
-    })();
-
-    vault_key.zeroize();
-
-    result
-}
-
 /// Initializes a certificate-protected vault.
 ///
 /// A fresh random vault key encrypts the payload. The vault key is wrapped
@@ -107,18 +67,16 @@ pub fn initialize_certificate_vault(
     let result = (|| {
         let cipher = encrypt_payload_with_key(&payload, &vault_key)?;
 
-        let wrapped_key = wrap_key_with_certificate(
-            &certificate_der,
-            KeyWrapAlgorithm::RsaOaepSha256,
-            &vault_key,
-        )?;
+        let algorithm = key_wrap_algorithm_for_backend(&backend);
+
+        let wrapped_key = wrap_key_with_certificate(&certificate_der, algorithm, &vault_key)?;
 
         let backup_wrapper = create_password_wrapper(&vault_key, backup_password)?;
 
         let certificate_wrapper = CertificateKeyWrapper {
             backend,
             identity,
-            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+            algorithm,
             wrapped_key: STANDARD.encode(wrapped_key),
         };
 
@@ -342,16 +300,14 @@ pub fn rotate_certificate_with_backup_password(
         // replacing any wrapper.
         let _payload = decrypt_payload_with_key(&cipher, &vault_key)?;
 
-        let wrapped_key = wrap_key_with_certificate(
-            &certificate_der,
-            KeyWrapAlgorithm::RsaOaepSha256,
-            &vault_key,
-        )?;
+        let algorithm = key_wrap_algorithm_for_backend(&backend);
+
+        let wrapped_key = wrap_key_with_certificate(&certificate_der, algorithm, &vault_key)?;
 
         let certificate_wrapper = CertificateKeyWrapper {
             backend,
             identity,
-            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+            algorithm,
             wrapped_key: STANDARD.encode(wrapped_key),
         };
 
@@ -442,6 +398,14 @@ pub fn save_vault(
     master_password: &str,
 ) -> Result<(), String> {
     save_password_vault(path, payload, master_password)
+}
+
+fn key_wrap_algorithm_for_backend(backend: &CertificateBackend) -> KeyWrapAlgorithm {
+    match backend {
+        CertificateBackend::Cac { .. } => KeyWrapAlgorithm::RsaPkcs1v15,
+
+        CertificateBackend::Pfx { .. } => KeyWrapAlgorithm::RsaOaepSha256,
+    }
 }
 
 fn ensure_vault_does_not_exist(path: &Path) -> Result<(), String> {

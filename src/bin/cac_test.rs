@@ -1,7 +1,9 @@
 use std::io::{self, Write};
 
 use anyhow::{Context as _, Result, bail};
-
+use rand::{RngCore, rngs::OsRng};
+use rsa::{Pkcs1v15Encrypt, RsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
+use x509_parser::parse_x509_certificate;
 use zeroize::Zeroizing;
 
 use password_out::smartcard::{
@@ -9,7 +11,8 @@ use password_out::smartcard::{
         CertificateInfo, decode_certificate, display_certificate, parse_certificate_info,
     },
     pcsc::connect_first_card,
-    piv::{PivCertificate, PivSlot, read_certificate, select_piv, verify_pin},
+    piv::{PivCertificate, PivSlot, read_certificate, rsa_key_transport, select_piv, verify_pin},
+    wrapping::decode_pkcs1_v15_encoded_message,
 };
 
 struct CertificateCandidate {
@@ -147,8 +150,92 @@ fn main() -> Result<()> {
 
     println!();
     println!("CAC PIN verified successfully.");
-    println!("No vault key was encrypted or decrypted.");
+
+    run_rsa_key_transport_round_trip(&card, &selected.certificate_der)?;
+
+    println!();
     println!("Certificate-chain trust has not yet been evaluated.");
+
+    Ok(())
+}
+
+fn run_rsa_key_transport_round_trip(card: &pcsc::Card, certificate_der: &[u8]) -> Result<()> {
+    println!();
+    println!("Testing CAC RSA key transport...");
+    println!("Generating a temporary random 256-bit test key.");
+
+    let (remaining, certificate) = parse_x509_certificate(certificate_der).map_err(|error| {
+        anyhow::anyhow!("failed to parse slot-9D certificate for RSA test: {error}")
+    })?;
+
+    if !remaining.is_empty() {
+        bail!(
+            "{} trailing byte(s) remained after parsing the slot-9D certificate",
+            remaining.len()
+        );
+    }
+
+    let public_key = RsaPublicKey::from_public_key_der(certificate.public_key().raw)
+        .context("failed to decode RSA public key from slot-9D certificate")?;
+
+    if public_key.size() != 256 {
+        bail!(
+            "CAC RSA key has a modulus size of {} bytes; \
+             this test currently supports RSA-2048 only",
+            public_key.size()
+        );
+    }
+
+    let mut original_key = Zeroizing::new(vec![0_u8; 32]);
+    OsRng.fill_bytes(original_key.as_mut_slice());
+
+    let ciphertext = public_key
+        .encrypt(&mut OsRng, Pkcs1v15Encrypt, original_key.as_slice())
+        .context("failed to encrypt the temporary key with the slot-9D public key")?;
+
+    if ciphertext.len() != public_key.size() {
+        bail!(
+            "RSA ciphertext has invalid length {}; expected {}",
+            ciphertext.len(),
+            public_key.size()
+        );
+    }
+
+    println!(
+        "Encrypted temporary key into a {}-byte RSA ciphertext.",
+        ciphertext.len()
+    );
+    println!("Requesting the slot-9D private-key operation from the CAC...");
+
+    let encoded_message = rsa_key_transport(card, PivSlot::KeyManagement, &ciphertext)
+        .context("CAC RSA key-transport operation failed")?;
+
+    let recovered_key = Zeroizing::new(
+        decode_pkcs1_v15_encoded_message(&encoded_message)
+            .context("failed to decode the CAC RSA result")?,
+    );
+
+    if recovered_key.len() != 32 {
+        bail!(
+            "CAC recovered a key containing {} bytes; expected 32",
+            recovered_key.len()
+        );
+    }
+
+    if recovered_key.as_slice() != original_key.as_slice() {
+        bail!(
+            "CAC RSA key-transport test failed: recovered key does not match \
+             the original temporary key"
+        );
+    }
+
+    println!();
+    println!("CAC RSA key-transport test passed.");
+    println!("  Slot: 9D");
+    println!("  Algorithm: RSAES-PKCS1-v1_5");
+    println!("  Temporary key size: 256 bits");
+    println!("  Recovered key matched: yes");
+    println!("  Temporary key value was not displayed.");
 
     Ok(())
 }

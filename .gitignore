@@ -5,3 +5,7 @@ secretscredchord.txt
 test-vault.json
 
 build/
+
+# Local development artifacts
+build.log
+cac-integration.txt

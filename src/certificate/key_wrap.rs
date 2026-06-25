@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 pub enum KeyWrapAlgorithm {
     #[serde(rename = "rsa-oaep-sha256")]
     RsaOaepSha256,
+
+    #[serde(rename = "rsa-pkcs1-v1_5")]
+    RsaPkcs1v15,
 }
 
 /// Wraps a vault key using the public key contained in an X.509 certificate.
@@ -30,11 +33,11 @@ pub fn wrap_key_with_certificate(
         .public_key()
         .map_err(|error| format!("failed to read certificate public key: {error}"))?;
 
+    let mut encrypter = Encrypter::new(&public_key)
+        .map_err(|error| format!("failed to initialize RSA encrypter: {error}"))?;
+
     match algorithm {
         KeyWrapAlgorithm::RsaOaepSha256 => {
-            let mut encrypter = Encrypter::new(&public_key)
-                .map_err(|error| format!("failed to initialize RSA encrypter: {error}"))?;
-
             encrypter
                 .set_rsa_padding(Padding::PKCS1_OAEP)
                 .map_err(|error| format!("failed to configure RSA-OAEP padding: {error}"))?;
@@ -46,28 +49,61 @@ pub fn wrap_key_with_certificate(
             encrypter
                 .set_rsa_mgf1_md(MessageDigest::sha256())
                 .map_err(|error| format!("failed to configure RSA MGF1 SHA-256: {error}"))?;
+        }
 
-            let output_length = encrypter
-                .encrypt_len(plaintext_key)
-                .map_err(|error| format!("failed to determine wrapped-key length: {error}"))?;
-
-            let mut wrapped_key = vec![0_u8; output_length];
-
-            let written = encrypter
-                .encrypt(plaintext_key, &mut wrapped_key)
-                .map_err(|error| format!("failed to wrap vault key: {error}"))?;
-
-            wrapped_key.truncate(written);
-
-            Ok(wrapped_key)
+        KeyWrapAlgorithm::RsaPkcs1v15 => {
+            encrypter
+                .set_rsa_padding(Padding::PKCS1)
+                .map_err(|error| format!("failed to configure RSA PKCS#1 v1.5 padding: {error}"))?;
         }
     }
+
+    let output_length = encrypter
+        .encrypt_len(plaintext_key)
+        .map_err(|error| format!("failed to determine wrapped-key length: {error}"))?;
+
+    let mut wrapped_key = vec![0_u8; output_length];
+
+    let written = encrypter
+        .encrypt(plaintext_key, &mut wrapped_key)
+        .map_err(|error| format!("failed to wrap vault key: {error}"))?;
+
+    wrapped_key.truncate(written);
+
+    Ok(wrapped_key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{KeyWrapAlgorithm, wrap_key_with_certificate};
     use crate::certificate::{SelfSignedCertificateOptions, create_self_signed_pfx};
+
+    #[test]
+    fn wraps_key_with_rsa_pkcs1_v15() {
+        let generated = create_self_signed_pfx(
+            &SelfSignedCertificateOptions {
+                rsa_bits: 2048,
+                validity_days: 30,
+                ..SelfSignedCertificateOptions::default()
+            },
+            "test-password",
+        )
+        .expect("certificate generation should succeed");
+
+        let certificate_der = generated
+            .certificate
+            .to_der()
+            .expect("certificate DER encoding should succeed");
+
+        let vault_key = [0x42_u8; 32];
+
+        let wrapped =
+            wrap_key_with_certificate(&certificate_der, KeyWrapAlgorithm::RsaPkcs1v15, &vault_key)
+                .expect("PKCS#1 v1.5 wrapping should succeed");
+
+        assert_eq!(wrapped.len(), 256);
+        assert_ne!(wrapped.as_slice(), vault_key);
+    }
 
     #[test]
     fn rejects_empty_plaintext_key() {

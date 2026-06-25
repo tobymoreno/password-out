@@ -4,21 +4,21 @@ use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 use password_out::certificate::{
-    PfxKeyProvider, SelfSignedCertificateOptions, create_self_signed_pfx, load_pfx, write_pfx,
+    CacCertificateSource, CacKeyProvider, PfxKeyProvider, SelfSignedCertificateOptions,
+    create_self_signed_pfx, load_pfx, write_pfx,
 };
 use password_out::smartcard::{
     certificate::{decode_certificate, parse_certificate_info},
     pcsc::connect_first_card,
     piv::{PivSlot, read_certificate, select_piv},
-    wrapping::wrap_key_with_cac_certificate,
 };
 
 use crate::hotkey;
 
 use super::access::{CertificateVaultAccess, PasswordVaultAccess, VaultAccess};
-use super::format::{CacKeyWrapper, CertificateBackend, VaultEnvelope, VaultUnlockMethod};
+use super::format::{CertificateBackend, VaultEnvelope, VaultUnlockMethod};
 use super::service::{
-    initialize_cac_vault, initialize_certificate_vault, initialize_password_vault,
+    initialize_certificate_vault, initialize_password_vault,
     rotate_certificate_with_backup_password,
 };
 use super::{
@@ -96,21 +96,18 @@ fn run_init_cac(path: &Path) -> Result<(), String> {
     println!("Create a backup password.");
     println!("This password is required if the CAC is lost, replaced, or unavailable.");
 
-    let backup_password = prompt_new_master_password()?;
+    let backup_password = prompt_new_secret("Backup password: ", "Confirm backup password: ")?;
 
-    initialize_cac_vault(path, backup_password.as_str(), |vault_key| {
-        let wrapped =
-            wrap_key_with_cac_certificate(&certificate_der, vault_key).map_err(|error| {
-                format!("failed to wrap the vault key with the CAC certificate: {error}")
-            })?;
+    let certificate_source = CacCertificateSource::new(certificate_der)?;
 
-        Ok(CacKeyWrapper {
-            slot: wrapped.slot,
-            certificate_sha256: wrapped.certificate_sha256,
-            algorithm: wrapped.algorithm,
-            wrapped_key: wrapped.wrapped_key,
-        })
-    })
+    initialize_certificate_vault(
+        path,
+        backup_password.as_str(),
+        &certificate_source,
+        CertificateBackend::Cac {
+            slot: "9D".to_string(),
+        },
+    )
 }
 
 fn run_init_software_certificate(path: &Path) -> Result<(), String> {
@@ -364,6 +361,9 @@ fn format_vault_info(path: &Path) -> Result<String, String> {
                     let algorithm = match certificate_wrapper.algorithm {
                         password_out::certificate::KeyWrapAlgorithm::RsaOaepSha256 => {
                             "rsa-oaep-sha256"
+                        }
+                        password_out::certificate::KeyWrapAlgorithm::RsaPkcs1v15 => {
+                            "RSA-PKCS1-v1_5"
                         }
                     };
 
@@ -707,9 +707,19 @@ fn create_certificate_vault_access(
             Ok(Box::new(CertificateVaultAccess::new(provider)))
         }
 
-        CertificateBackend::Cac { slot } => Err(format!(
-            "this vault uses CAC slot {slot}; CAC entry operations are not connected yet"
-        )),
+        CertificateBackend::Cac { slot } => {
+            if !slot.eq_ignore_ascii_case("9D") {
+                return Err(format!("unsupported CAC slot '{slot}'; expected 9D"));
+            }
+
+            println!("Connecting to CAC slot 9D...");
+            println!("The PIN will be verified once. Incorrect PINs are not retried.");
+
+            let pin = prompt_secret("CAC PIN: ")?;
+            let provider = CacKeyProvider::connect(pin.as_str())?;
+
+            Ok(Box::new(CertificateVaultAccess::new(provider)))
+        }
     }
 }
 

@@ -51,11 +51,11 @@ impl CertificatePrivateKey for PfxKeyProvider {
             return Err("wrapped vault key cannot be empty".to_string());
         }
 
+        let mut decrypter = Decrypter::new(&self.private_key)
+            .map_err(|error| format!("failed to initialize RSA decrypter: {error}"))?;
+
         match algorithm {
             KeyWrapAlgorithm::RsaOaepSha256 => {
-                let mut decrypter = Decrypter::new(&self.private_key)
-                    .map_err(|error| format!("failed to initialize RSA decrypter: {error}"))?;
-
                 decrypter
                     .set_rsa_padding(Padding::PKCS1_OAEP)
                     .map_err(|error| format!("failed to configure RSA-OAEP padding: {error}"))?;
@@ -67,22 +67,28 @@ impl CertificatePrivateKey for PfxKeyProvider {
                 decrypter
                     .set_rsa_mgf1_md(MessageDigest::sha256())
                     .map_err(|error| format!("failed to configure RSA MGF1 SHA-256: {error}"))?;
+            }
 
-                let output_length = decrypter.decrypt_len(wrapped_key).map_err(|error| {
-                    format!("failed to determine unwrapped-key length: {error}")
+            KeyWrapAlgorithm::RsaPkcs1v15 => {
+                decrypter.set_rsa_padding(Padding::PKCS1).map_err(|error| {
+                    format!("failed to configure RSA PKCS#1 v1.5 padding: {error}")
                 })?;
-
-                let mut plaintext = Zeroizing::new(vec![0_u8; output_length]);
-
-                let written = decrypter
-                    .decrypt(wrapped_key, plaintext.as_mut_slice())
-                    .map_err(|error| format!("failed to unwrap vault key: {error}"))?;
-
-                plaintext.truncate(written);
-
-                Ok(plaintext)
             }
         }
+
+        let output_length = decrypter
+            .decrypt_len(wrapped_key)
+            .map_err(|error| format!("failed to determine unwrapped-key length: {error}"))?;
+
+        let mut plaintext = Zeroizing::new(vec![0_u8; output_length]);
+
+        let written = decrypter
+            .decrypt(wrapped_key, plaintext.as_mut_slice())
+            .map_err(|error| format!("failed to unwrap vault key: {error}"))?;
+
+        plaintext.truncate(written);
+
+        Ok(plaintext)
     }
 }
 
@@ -130,6 +136,41 @@ mod tests {
         let unwrapped_key = provider
             .unwrap_key(KeyWrapAlgorithm::RsaOaepSha256, &wrapped_key)
             .expect("vault-key unwrapping should succeed");
+
+        assert_eq!(unwrapped_key.as_slice(), vault_key);
+    }
+
+    #[test]
+    fn wraps_and_unwraps_pkcs1_v15_key() {
+        let generated = create_self_signed_pfx(
+            &SelfSignedCertificateOptions {
+                rsa_bits: 2048,
+                validity_days: 30,
+                ..SelfSignedCertificateOptions::default()
+            },
+            "test-password",
+        )
+        .expect("PFX generation should succeed");
+
+        let loaded =
+            load_pfx_der(&generated.pfx_der, "test-password").expect("PFX loading should succeed");
+
+        let mut provider =
+            PfxKeyProvider::from_loaded_pfx(loaded).expect("PFX provider creation should succeed");
+
+        let certificate_der = provider
+            .certificate_der()
+            .expect("certificate encoding should succeed");
+
+        let vault_key = [0x77_u8; 32];
+
+        let wrapped_key =
+            wrap_key_with_certificate(&certificate_der, KeyWrapAlgorithm::RsaPkcs1v15, &vault_key)
+                .expect("PKCS#1 v1.5 wrapping should succeed");
+
+        let unwrapped_key = provider
+            .unwrap_key(KeyWrapAlgorithm::RsaPkcs1v15, &wrapped_key)
+            .expect("PKCS#1 v1.5 unwrapping should succeed");
 
         assert_eq!(unwrapped_key.as_slice(), vault_key);
     }

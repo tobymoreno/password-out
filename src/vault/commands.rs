@@ -562,6 +562,18 @@ pub fn run_recover(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn load_payload_for_cli(path: &Path) -> Result<super::VaultPayload, String> {
+    let mut access = create_vault_access(path)?;
+    load_payload_with_access(path, access.as_mut())
+}
+
+fn load_payload_with_access(
+    path: &Path,
+    access: &mut dyn VaultAccess,
+) -> Result<super::VaultPayload, String> {
+    access.load(path)
+}
+
 pub fn run_add(path: &Path) -> Result<(), String> {
     let mut access = create_vault_access(path)?;
 
@@ -831,6 +843,7 @@ fn prompt_secret(prompt: &str) -> Result<Zeroizing<String>, String> {
 #[cfg(test)]
 mod vault_info_tests {
     use super::*;
+    use crate::vault::{VaultEntry, VaultPayload};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_test_directory(name: &str) -> PathBuf {
@@ -843,6 +856,44 @@ mod vault_info_tests {
             "password-out-{name}-{}-{timestamp}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn listener_loader_returns_payload_from_injected_access() {
+        let path = PathBuf::from("unused-test-vault.json");
+
+        let expected = VaultPayload {
+            entries: vec![VaultEntry {
+                name: "listener-user".to_string(),
+                hotkey: "CTRL+ALT+1".to_string(),
+                secret: "listener-secret".to_string(),
+            }],
+        };
+
+        let mut access = crate::vault::access::InMemoryVaultAccess::new(expected.clone());
+
+        let loaded =
+            load_payload_with_access(&path, &mut access).expect("listener payload should load");
+
+        assert_eq!(loaded, expected);
+        assert_eq!(access.load_count(), 1);
+        assert_eq!(access.save_count(), 0);
+    }
+
+    #[test]
+    fn listener_loader_propagates_access_failure() {
+        let path = PathBuf::from("unused-test-vault.json");
+
+        let mut access = crate::vault::access::InMemoryVaultAccess::new(VaultPayload::default());
+
+        access.fail_next_load("listener unlock failed");
+
+        let error = load_payload_with_access(&path, &mut access)
+            .expect_err("listener load failure should propagate");
+
+        assert_eq!(error, "listener unlock failed");
+        assert_eq!(access.load_count(), 1);
+        assert_eq!(access.save_count(), 0);
     }
 
     #[test]

@@ -434,13 +434,6 @@ pub fn save_password_vault(
 
 /// Backward-compatible name used by the existing CLI.
 ///
-/// This currently means password-based loading.
-pub fn load_vault(path: &Path, master_password: &str) -> Result<VaultPayload, String> {
-    load_password_vault(path, master_password)
-}
-
-/// Backward-compatible name used by the existing CLI.
-///
 /// This currently means password-based saving.
 #[allow(dead_code)]
 pub fn save_vault(
@@ -546,7 +539,8 @@ mod tests {
         initialize_password_vault(&path, password)
             .expect("compatibility initialization should succeed");
 
-        let payload = load_vault(&path, password).expect("compatibility load should succeed");
+        let payload =
+            load_password_vault(&path, password).expect("password vault load should succeed");
 
         save_vault(&path, &payload, password).expect("compatibility save should succeed");
 
@@ -638,4 +632,249 @@ fn initializes_and_unlocks_certificate_vault_with_pfx_provider() {
     assert!(payload.entries.is_empty());
 
     let _ = std::fs::remove_dir_all(test_dir);
+}
+
+#[cfg(test)]
+mod recovery_rotation_tests {
+    use super::*;
+    use password_out::certificate::{
+        PfxKeyProvider, SelfSignedCertificateOptions, create_self_signed_pfx, load_pfx, write_pfx,
+    };
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_directory(name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+
+        std::env::temp_dir().join(format!(
+            "password-out-{name}-{}-{timestamp}",
+            std::process::id()
+        ))
+    }
+
+    fn create_test_pfx(path: &Path, common_name: &str, password: &str) -> PfxKeyProvider {
+        let options = SelfSignedCertificateOptions {
+            common_name: common_name.to_string(),
+            friendly_name: common_name.to_string(),
+            validity_days: 365,
+            rsa_bits: 2048,
+        };
+
+        let generated = create_self_signed_pfx(&options, password)
+            .expect("self-signed PFX generation should succeed");
+
+        write_pfx(path, &generated.pfx_der).expect("PFX file should be written");
+
+        let loaded = load_pfx(path, password).expect("PFX should load");
+
+        PfxKeyProvider::from_loaded_pfx(loaded).expect("PFX provider should initialize")
+    }
+
+    fn load_test_pfx(path: &Path, password: &str) -> PfxKeyProvider {
+        let loaded = load_pfx(path, password).expect("PFX should reload");
+
+        PfxKeyProvider::from_loaded_pfx(loaded).expect("PFX provider should initialize")
+    }
+
+    #[test]
+    fn backup_password_recovers_certificate_vault_and_rejects_wrong_password() {
+        let test_directory = unique_test_directory("backup-recovery");
+
+        let vault_path = test_directory.join("vault.json");
+        let pfx_path = test_directory.join("vault.pfx");
+
+        let pfx_password = "test-pfx-password";
+        let backup_password = "correct-backup-password";
+
+        let provider = create_test_pfx(&pfx_path, "PasswordOut Recovery Test", pfx_password);
+
+        initialize_certificate_vault(
+            &vault_path,
+            backup_password,
+            &provider,
+            CertificateBackend::Pfx {
+                suggested_filename: Some("vault.pfx".to_string()),
+            },
+        )
+        .expect("certificate vault initialization should succeed");
+
+        let payload = recover_vault_with_backup_password(&vault_path, backup_password)
+            .expect("correct backup password should recover vault");
+
+        assert!(payload.entries.is_empty());
+
+        let error = recover_vault_with_backup_password(&vault_path, "wrong-backup-password")
+            .expect_err("wrong backup password should fail");
+
+        assert!(
+            error.contains("incorrect password") || error.contains("damaged wrapper"),
+            "unexpected recovery error: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(test_directory);
+    }
+
+    #[test]
+    fn password_vault_rejects_backup_recovery_and_certificate_rotation() {
+        let test_directory = unique_test_directory("password-vault-recovery-rejection");
+
+        let vault_path = test_directory.join("vault.json");
+        let replacement_pfx_path = test_directory.join("replacement.pfx");
+
+        initialize_password_vault(&vault_path, "normal-master-password")
+            .expect("password vault initialization should succeed");
+
+        let recovery_error =
+            recover_vault_with_backup_password(&vault_path, "unused-backup-password")
+                .expect_err("password vault should reject backup recovery");
+
+        assert!(
+            recovery_error.contains("normal password protection"),
+            "unexpected recovery error: {recovery_error}"
+        );
+
+        let replacement_provider = create_test_pfx(
+            &replacement_pfx_path,
+            "PasswordOut Replacement Test",
+            "replacement-pfx-password",
+        );
+
+        let rotation_error = rotate_certificate_with_backup_password(
+            &vault_path,
+            "unused-backup-password",
+            &replacement_provider,
+            CertificateBackend::Pfx {
+                suggested_filename: Some("replacement.pfx".to_string()),
+            },
+        )
+        .expect_err("password vault should reject certificate rotation");
+
+        assert!(
+            rotation_error.contains("normal password protection")
+                || rotation_error.contains("no certificate"),
+            "unexpected rotation error: {rotation_error}"
+        );
+
+        let _ = std::fs::remove_dir_all(test_directory);
+    }
+
+    #[test]
+    fn pfx_rotation_preserves_cipher_and_backup_wrapper() {
+        let test_directory = unique_test_directory("pfx-rotation");
+
+        let vault_path = test_directory.join("vault.json");
+        let old_pfx_path = test_directory.join("old.pfx");
+        let new_pfx_path = test_directory.join("new.pfx");
+
+        let old_pfx_password = "old-pfx-password";
+        let new_pfx_password = "new-pfx-password";
+        let backup_password = "rotation-backup-password";
+
+        let old_provider = create_test_pfx(
+            &old_pfx_path,
+            "PasswordOut Old Certificate",
+            old_pfx_password,
+        );
+
+        initialize_certificate_vault(
+            &vault_path,
+            backup_password,
+            &old_provider,
+            CertificateBackend::Pfx {
+                suggested_filename: Some("old.pfx".to_string()),
+            },
+        )
+        .expect("certificate vault initialization should succeed");
+
+        let before = read_envelope(&vault_path).expect("vault should load before rotation");
+
+        let VaultEnvelope::V2(before_v2) = before else {
+            panic!("certificate vault should use version 2");
+        };
+
+        let before_nonce = before_v2.cipher.nonce.clone();
+        let before_ciphertext = before_v2.cipher.ciphertext.clone();
+
+        let before_backup_wrapper = match before_v2.unlock {
+            VaultUnlockMethod::Certificate { backup_wrapper, .. } => {
+                serde_json::to_value(backup_wrapper).expect("backup wrapper should serialize")
+            }
+
+            other => panic!("expected certificate unlock before rotation, got {other:?}"),
+        };
+
+        let replacement_provider = create_test_pfx(
+            &new_pfx_path,
+            "PasswordOut New Certificate",
+            new_pfx_password,
+        );
+
+        rotate_certificate_with_backup_password(
+            &vault_path,
+            backup_password,
+            &replacement_provider,
+            CertificateBackend::Pfx {
+                suggested_filename: Some("new.pfx".to_string()),
+            },
+        )
+        .expect("certificate rotation should succeed");
+
+        let after = read_envelope(&vault_path).expect("vault should load after rotation");
+
+        let VaultEnvelope::V2(after_v2) = after else {
+            panic!("rotated certificate vault should use version 2");
+        };
+
+        assert_eq!(after_v2.cipher.nonce, before_nonce);
+        assert_eq!(after_v2.cipher.ciphertext, before_ciphertext);
+
+        let after_backup_wrapper = match &after_v2.unlock {
+            VaultUnlockMethod::Certificate {
+                certificate_wrapper,
+                backup_wrapper,
+            } => {
+                assert_eq!(
+                    certificate_wrapper.backend,
+                    CertificateBackend::Pfx {
+                        suggested_filename: Some("new.pfx".to_string(),),
+                    }
+                );
+
+                serde_json::to_value(backup_wrapper).expect("backup wrapper should serialize")
+            }
+
+            other => panic!("expected certificate unlock after rotation, got {other:?}"),
+        };
+
+        assert_eq!(
+            after_backup_wrapper, before_backup_wrapper,
+            "rotation must preserve the backup-password wrapper"
+        );
+
+        let mut new_provider = load_test_pfx(&new_pfx_path, new_pfx_password);
+
+        let (payload, _session) = open_certificate_vault_session(&vault_path, &mut new_provider)
+            .expect("replacement PFX should unlock rotated vault");
+
+        assert!(payload.entries.is_empty());
+
+        let mut old_provider = load_test_pfx(&old_pfx_path, old_pfx_password);
+
+        let old_result = open_certificate_vault_session(&vault_path, &mut old_provider);
+
+        assert!(
+            old_result.is_err(),
+            "previous PFX must not unlock rotated vault"
+        );
+
+        let recovered = recover_vault_with_backup_password(&vault_path, backup_password)
+            .expect("backup password should still recover rotated vault");
+
+        assert!(recovered.entries.is_empty());
+
+        let _ = std::fs::remove_dir_all(test_directory);
+    }
 }

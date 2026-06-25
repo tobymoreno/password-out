@@ -15,13 +15,14 @@ use password_out::smartcard::{
 
 use crate::hotkey;
 
-use super::format::{CacKeyWrapper, CertificateBackend};
+use super::access::{CertificateVaultAccess, PasswordVaultAccess, VaultAccess};
+use super::format::{CacKeyWrapper, CertificateBackend, VaultEnvelope, VaultUnlockMethod};
 use super::service::{
     initialize_cac_vault, initialize_certificate_vault, initialize_password_vault,
 };
 use super::{
-    PasswordVaultAccess, add_entry_with_access, list_entries_with_access, prompt_master_password,
-    prompt_new_master_password, remove_entry_with_access,
+    add_entry_with_access, list_entries_with_access, prompt_master_password,
+    prompt_new_master_password, read_envelope, remove_entry_with_access,
 };
 
 pub fn run_init(path: &Path) -> Result<(), String> {
@@ -227,8 +228,7 @@ fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
 }
 
 pub fn run_add(path: &Path) -> Result<(), String> {
-    let master_password = prompt_master_password("Master password: ")?;
-    let mut access = PasswordVaultAccess::new(master_password);
+    let mut access = create_vault_access(path)?;
 
     let name = prompt_text("Entry name: ")?;
     let hotkey = hotkey::capture()?;
@@ -236,7 +236,7 @@ pub fn run_add(path: &Path) -> Result<(), String> {
 
     add_entry_with_access(
         path,
-        &mut access,
+        access.as_mut(),
         name.clone(),
         hotkey.clone(),
         secret.to_string(),
@@ -249,10 +249,9 @@ pub fn run_add(path: &Path) -> Result<(), String> {
 }
 
 pub fn run_list(path: &Path) -> Result<(), String> {
-    let master_password = prompt_master_password("Master password: ")?;
-    let mut access = PasswordVaultAccess::new(master_password);
+    let mut access = create_vault_access(path)?;
 
-    let entries = list_entries_with_access(path, &mut access)?;
+    let entries = list_entries_with_access(path, access.as_mut())?;
 
     if entries.is_empty() {
         println!("No entries found.");
@@ -269,10 +268,9 @@ pub fn run_list(path: &Path) -> Result<(), String> {
 }
 
 pub fn run_remove(path: &Path) -> Result<(), String> {
-    let master_password = prompt_master_password("Master password: ")?;
-    let mut access = PasswordVaultAccess::new(master_password);
+    let mut access = create_vault_access(path)?;
 
-    let entries = list_entries_with_access(path, &mut access)?;
+    let entries = list_entries_with_access(path, access.as_mut())?;
 
     if entries.is_empty() {
         println!("No entries found.");
@@ -304,12 +302,79 @@ pub fn run_remove(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let (removed_name, removed_hotkey) = remove_entry_with_access(path, &mut access, &name)?;
+    let (removed_name, removed_hotkey) = remove_entry_with_access(path, access.as_mut(), &name)?;
 
     println!("Removed entry:");
     println!("  {removed_name}  {removed_hotkey}");
 
     Ok(())
+}
+
+fn create_vault_access(path: &Path) -> Result<Box<dyn VaultAccess>, String> {
+    let envelope = read_envelope(path)?;
+
+    match envelope {
+        VaultEnvelope::V1(_) => {
+            let password = prompt_master_password("Master password: ")?;
+            Ok(Box::new(PasswordVaultAccess::new(password)))
+        }
+
+        VaultEnvelope::V2(version_2) => match version_2.unlock {
+            VaultUnlockMethod::Password { .. } => {
+                let password = prompt_master_password("Master password: ")?;
+                Ok(Box::new(PasswordVaultAccess::new(password)))
+            }
+
+            VaultUnlockMethod::Certificate {
+                certificate_wrapper,
+                ..
+            } => create_certificate_vault_access(path, certificate_wrapper.backend),
+
+            VaultUnlockMethod::Cac { .. } => Err(
+                "this vault uses the legacy CAC format; CAC entry operations are not connected yet"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+fn create_certificate_vault_access(
+    vault_path: &Path,
+    backend: CertificateBackend,
+) -> Result<Box<dyn VaultAccess>, String> {
+    match backend {
+        CertificateBackend::Pfx { suggested_filename } => {
+            let default_path = suggested_pfx_path(vault_path, suggested_filename.as_deref());
+
+            let prompt = format!("PFX path [{}]: ", default_path.display());
+            let pfx_path = prompt_path_with_default(&prompt, &default_path)?;
+
+            if !pfx_path.is_file() {
+                return Err(format!("PFX file does not exist: {}", pfx_path.display()));
+            }
+
+            let password = prompt_secret("PFX password: ")?;
+            let loaded = load_pfx(&pfx_path, password.as_str())?;
+            let provider = PfxKeyProvider::from_loaded_pfx(loaded)?;
+
+            Ok(Box::new(CertificateVaultAccess::new(provider)))
+        }
+
+        CertificateBackend::Cac { slot } => Err(format!(
+            "this vault uses CAC slot {slot}; CAC entry operations are not connected yet"
+        )),
+    }
+}
+
+fn suggested_pfx_path(vault_path: &Path, suggested_filename: Option<&str>) -> PathBuf {
+    match suggested_filename {
+        Some(filename) => vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(filename),
+
+        None => default_generated_pfx_path(vault_path),
+    }
 }
 
 fn default_generated_pfx_path(vault_path: &Path) -> PathBuf {

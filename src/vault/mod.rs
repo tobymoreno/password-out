@@ -1,8 +1,6 @@
 mod access;
 mod entry_ops;
 
-pub use access::PasswordVaultAccess;
-
 pub use entry_ops::{add_entry_with_access, list_entries_with_access, remove_entry_with_access};
 
 pub mod commands;

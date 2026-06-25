@@ -71,6 +71,21 @@ enum VaultCommand {
     /// The command prompts for the information needed to protect the new vault
     /// and refuses to overwrite an existing vault.
     Init,
+
+    /// Recover a certificate or CAC vault using its backup password.
+    ///
+    /// This verifies that the backup password can recover the vault key and
+    /// decrypt the vault. The existing protection wrappers remain unchanged.
+    Recover,
+
+    /// Replace the certificate protecting an existing vault.
+    ///
+    /// The existing backup password recovers the vault key, which is then
+    /// wrapped with a newly generated or imported software certificate.
+    RotateCertificate,
+
+    /// Display non-secret metadata about an encrypted vault.
+    Info,
 }
 
 #[derive(Debug, Args)]
@@ -95,6 +110,9 @@ enum EntryCommand {
 pub enum Mode {
     Listen,
     VaultInit,
+    VaultRecover,
+    VaultRotateCertificate,
+    VaultInfo,
     EntryAdd,
     EntryList,
     EntryRemove,
@@ -135,6 +153,18 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
                 command: VaultCommand::Init,
             })) => Mode::VaultInit,
 
+            Some(Command::Vault(VaultArgs {
+                command: VaultCommand::Recover,
+            })) => Mode::VaultRecover,
+
+            Some(Command::Vault(VaultArgs {
+                command: VaultCommand::RotateCertificate,
+            })) => Mode::VaultRotateCertificate,
+
+            Some(Command::Vault(VaultArgs {
+                command: VaultCommand::Info,
+            })) => Mode::VaultInfo,
+
             Some(Command::Entry(EntryArgs {
                 command: EntryCommand::Add,
             })) => Mode::EntryAdd,
@@ -149,7 +179,7 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
 
             None => {
                 return Err(
-                    "missing mode: use --listen, vault init, entry add, entry list, or entry remove"
+                    "missing mode: use --listen, vault init, vault recover, vault rotate-certificate, vault info, entry add, entry list, or entry remove"
                         .to_string(),
                 );
             }

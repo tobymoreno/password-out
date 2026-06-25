@@ -8,8 +8,7 @@ pub fn run() -> Result<(), String> {
 
     match config.mode {
         Mode::Listen => {
-            let master_password = vault::prompt_master_password("Master password: ")?;
-            let payload = vault::load_vault(&config.vault_file, master_password.as_str())?;
+            let payload = vault::load_payload_for_cli(&config.vault_file)?;
 
             let runtime_entries = payload
                 .entries
@@ -25,6 +24,12 @@ pub fn run() -> Result<(), String> {
         }
 
         Mode::VaultInit => vault::run_init(&config.vault_file),
+
+        Mode::VaultRecover => vault::run_recover(&config.vault_file),
+
+        Mode::VaultRotateCertificate => vault::run_rotate_certificate(&config.vault_file),
+
+        Mode::VaultInfo => vault::run_info(&config.vault_file),
 
         Mode::EntryAdd => vault::run_add(&config.vault_file),
 

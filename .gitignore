@@ -9,3 +9,13 @@ build/
 # Local development artifacts
 build.log
 cac-integration.txt
+
+# Local build and test artifacts
+build/
+build.log
+cac-integration.txt
+
+# Local test artifacts
+build/test/
+build.log
+cac-integration.txt

@@ -295,6 +295,83 @@ pub fn recover_vault_with_backup_password(
     result
 }
 
+/// Replaces the certificate wrapper using the existing backup password.
+///
+/// The encrypted payload and backup-password wrapper are preserved unchanged.
+/// Only the certificate identity and certificate-wrapped copy of the existing
+/// random vault key are replaced.
+pub fn rotate_certificate_with_backup_password(
+    path: &Path,
+    backup_password: &str,
+    certificate_source: &dyn CertificateSource,
+    backend: CertificateBackend,
+) -> Result<(), String> {
+    backend.validate()?;
+
+    let certificate_der = certificate_source.certificate_der()?;
+    let identity = certificate_identity_from_der(&certificate_der)?;
+
+    let envelope = read_envelope(path)?;
+
+    let VaultEnvelope::V2(version_2) = envelope else {
+        return Err("version-1 vaults do not support certificate rotation".to_string());
+    };
+
+    let VaultEnvelopeV2 {
+        version,
+        unlock,
+        cipher,
+    } = version_2;
+
+    let backup_wrapper = match unlock {
+        VaultUnlockMethod::Password { .. } => {
+            return Err(
+                "this vault uses normal password protection and has no certificate to rotate"
+                    .to_string(),
+            );
+        }
+
+        VaultUnlockMethod::Cac { backup_wrapper, .. }
+        | VaultUnlockMethod::Certificate { backup_wrapper, .. } => backup_wrapper,
+    };
+
+    let mut vault_key = unwrap_key_with_password(&backup_wrapper, backup_password)?;
+
+    let result = (|| {
+        // Verify that the recovered key actually decrypts this vault before
+        // replacing any wrapper.
+        let _payload = decrypt_payload_with_key(&cipher, &vault_key)?;
+
+        let wrapped_key = wrap_key_with_certificate(
+            &certificate_der,
+            KeyWrapAlgorithm::RsaOaepSha256,
+            &vault_key,
+        )?;
+
+        let certificate_wrapper = CertificateKeyWrapper {
+            backend,
+            identity,
+            algorithm: KeyWrapAlgorithm::RsaOaepSha256,
+            wrapped_key: STANDARD.encode(wrapped_key),
+        };
+
+        let rotated = VaultEnvelope::V2(VaultEnvelopeV2 {
+            version,
+            unlock: VaultUnlockMethod::Certificate {
+                certificate_wrapper,
+                backup_wrapper,
+            },
+            cipher,
+        });
+
+        rotated.validate()?;
+        write_envelope(path, &rotated)
+    })();
+
+    vault_key.zeroize();
+    result
+}
+
 /// Loads a password-unlocked vault.
 ///
 /// This supports:

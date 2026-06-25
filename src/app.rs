@@ -28,6 +28,8 @@ pub fn run() -> Result<(), String> {
 
         Mode::VaultRecover => vault::run_recover(&config.vault_file),
 
+        Mode::VaultRotateCertificate => vault::run_rotate_certificate(&config.vault_file),
+
         Mode::EntryAdd => vault::run_add(&config.vault_file),
 
         Mode::EntryList => vault::run_list(&config.vault_file),

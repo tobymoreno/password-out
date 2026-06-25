@@ -77,6 +77,12 @@ enum VaultCommand {
     /// This verifies that the backup password can recover the vault key and
     /// decrypt the vault. The existing protection wrappers remain unchanged.
     Recover,
+
+    /// Replace the certificate protecting an existing vault.
+    ///
+    /// The existing backup password recovers the vault key, which is then
+    /// wrapped with a newly generated or imported software certificate.
+    RotateCertificate,
 }
 
 #[derive(Debug, Args)]
@@ -102,6 +108,7 @@ pub enum Mode {
     Listen,
     VaultInit,
     VaultRecover,
+    VaultRotateCertificate,
     EntryAdd,
     EntryList,
     EntryRemove,
@@ -146,6 +153,10 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
                 command: VaultCommand::Recover,
             })) => Mode::VaultRecover,
 
+            Some(Command::Vault(VaultArgs {
+                command: VaultCommand::RotateCertificate,
+            })) => Mode::VaultRotateCertificate,
+
             Some(Command::Entry(EntryArgs {
                 command: EntryCommand::Add,
             })) => Mode::EntryAdd,
@@ -160,7 +171,7 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
 
             None => {
                 return Err(
-                    "missing mode: use --listen, vault init, vault recover, entry add, entry list, or entry remove"
+                    "missing mode: use --listen, vault init, vault recover, vault rotate-certificate, entry add, entry list, or entry remove"
                         .to_string(),
                 );
             }

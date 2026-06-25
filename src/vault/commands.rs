@@ -19,6 +19,7 @@ use super::access::{CertificateVaultAccess, PasswordVaultAccess, VaultAccess};
 use super::format::{CacKeyWrapper, CertificateBackend, VaultEnvelope, VaultUnlockMethod};
 use super::service::{
     initialize_cac_vault, initialize_certificate_vault, initialize_password_vault,
+    rotate_certificate_with_backup_password,
 };
 use super::{
     add_entry_with_access, list_entries_with_access, prompt_master_password,
@@ -228,6 +229,138 @@ fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
     )
 }
 
+pub fn run_rotate_certificate(path: &Path) -> Result<(), String> {
+    println!("Rotate the certificate protecting this vault.");
+    println!("The credential payload and backup password will remain unchanged.");
+    println!();
+
+    let backup_password = prompt_master_password("Backup password: ")?;
+
+    println!();
+    println!("Choose the replacement software-certificate source:");
+    println!("  1. Generate a new self-signed PFX");
+    println!("  2. Use an existing PFX");
+
+    let choice = prompt_text("Selection [1-2]: ")?;
+
+    match choice.as_str() {
+        "1" => run_rotate_generated_pfx(path, backup_password.as_str()),
+
+        "2" => run_rotate_existing_pfx(path, backup_password.as_str()),
+
+        _ => Err("selection must be 1 or 2".to_string()),
+    }
+}
+
+fn run_rotate_generated_pfx(vault_path: &Path, backup_password: &str) -> Result<(), String> {
+    println!();
+
+    let default_pfx_path = default_rotated_pfx_path(vault_path);
+
+    let prompt = format!(
+        "Replacement PFX output path [{}]: ",
+        default_pfx_path.display()
+    );
+
+    let pfx_path = prompt_path_with_default(&prompt, &default_pfx_path)?;
+
+    if pfx_path.exists() {
+        return Err(format!(
+            "refusing to overwrite existing PFX: {}",
+            pfx_path.display()
+        ));
+    }
+
+    ensure_parent_directory(&pfx_path)?;
+
+    let common_name = prompt_text_with_default(
+        "Certificate common name [PasswordOut Vault Key]: ",
+        "PasswordOut Vault Key",
+    )?;
+
+    println!();
+    println!("Create a password for the replacement PFX private key.");
+
+    let pfx_password = prompt_new_secret("PFX password: ", "Confirm PFX password: ")?;
+
+    let options = SelfSignedCertificateOptions {
+        common_name: common_name.clone(),
+        friendly_name: common_name,
+        validity_days: 3650,
+        rsa_bits: 3072,
+    };
+
+    let generated = create_self_signed_pfx(&options, pfx_password.as_str())?;
+
+    write_pfx(&pfx_path, &generated.pfx_der)?;
+
+    let loaded = load_pfx(&pfx_path, pfx_password.as_str())?;
+
+    let provider = PfxKeyProvider::from_loaded_pfx(loaded)?;
+
+    let result = rotate_certificate_with_backup_password(
+        vault_path,
+        backup_password,
+        &provider,
+        CertificateBackend::Pfx {
+            suggested_filename: pfx_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        },
+    );
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&pfx_path);
+    }
+
+    result?;
+
+    println!();
+    println!("Certificate rotation successful.");
+    println!("Replacement PFX:");
+    println!("  {}", pfx_path.display());
+    println!("The previous certificate no longer unlocks this vault.");
+    println!("The backup password remains unchanged.");
+
+    Ok(())
+}
+
+fn run_rotate_existing_pfx(vault_path: &Path, backup_password: &str) -> Result<(), String> {
+    println!();
+
+    let pfx_path = PathBuf::from(prompt_text("Replacement PFX path: ")?);
+
+    if !pfx_path.is_file() {
+        return Err(format!("PFX file does not exist: {}", pfx_path.display()));
+    }
+
+    let pfx_password = prompt_secret("Replacement PFX password: ")?;
+
+    let loaded = load_pfx(&pfx_path, pfx_password.as_str())?;
+
+    let provider = PfxKeyProvider::from_loaded_pfx(loaded)?;
+
+    rotate_certificate_with_backup_password(
+        vault_path,
+        backup_password,
+        &provider,
+        CertificateBackend::Pfx {
+            suggested_filename: pfx_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        },
+    )?;
+
+    println!();
+    println!("Certificate rotation successful.");
+    println!("Replacement PFX:");
+    println!("  {}", pfx_path.display());
+    println!("The previous certificate no longer unlocks this vault.");
+    println!("The backup password remains unchanged.");
+
+    Ok(())
+}
+
 pub fn run_recover(path: &Path) -> Result<(), String> {
     println!("Recovering the vault through its backup-password wrapper.");
     println!("The existing certificate/CAC protection will remain unchanged.");
@@ -397,6 +530,10 @@ fn suggested_pfx_path(vault_path: &Path, suggested_filename: Option<&str>) -> Pa
 
 fn default_generated_pfx_path(vault_path: &Path) -> PathBuf {
     vault_path.with_extension("pfx")
+}
+
+fn default_rotated_pfx_path(vault_path: &Path) -> PathBuf {
+    vault_path.with_extension("rotated.pfx")
 }
 
 fn ensure_parent_directory(path: &Path) -> Result<(), String> {

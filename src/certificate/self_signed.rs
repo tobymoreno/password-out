@@ -199,12 +199,15 @@ pub fn load_pfx(path: &Path, password: &str) -> Result<LoadedPfx, String> {
 pub fn load_pfx_der(pfx_der: &[u8], password: &str) -> Result<LoadedPfx, String> {
     validate_password(password)?;
 
-    let pfx =
-        Pkcs12::from_der(pfx_der).map_err(|error| format!("failed to parse PFX data: {error}"))?;
+    let pfx = Pkcs12::from_der(pfx_der).map_err(|error| {
+        format!("failed to load PFX: the selected data is not a valid PKCS#12/PFX file ({error})")
+    })?;
 
-    let parsed = pfx
-        .parse2(password)
-        .map_err(|error| format!("failed to unlock PFX: {error}"))?;
+    let parsed = pfx.parse2(password).map_err(|error| {
+        format!(
+            "failed to unlock PFX: the password is incorrect or the PKCS#12/PFX file is damaged ({error})"
+        )
+    })?;
 
     let certificate = parsed
         .cert
@@ -319,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_pfx_password() {
+    fn rejects_wrong_pfx_password_with_clear_error() {
         let options = SelfSignedCertificateOptions {
             rsa_bits: 2048,
             validity_days: 30,
@@ -329,9 +332,28 @@ mod tests {
         let generated = create_self_signed_pfx(&options, "correct-password")
             .expect("PFX generation should succeed");
 
-        let result = load_pfx_der(&generated.pfx_der, "wrong-password");
+        let error = match load_pfx_der(&generated.pfx_der, "wrong-password") {
+            Ok(_) => panic!("wrong PFX password should be rejected"),
+            Err(error) => error,
+        };
 
-        assert!(result.is_err());
+        assert!(
+            error.contains("the password is incorrect or the PKCS#12/PFX file is damaged"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_pfx_data_with_clear_error() {
+        let error = match load_pfx_der(br#"{"this":"is not a PFX file"}"#, "unused-password") {
+            Ok(_) => panic!("non-PFX data should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("the selected data is not a valid PKCS#12/PFX file"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

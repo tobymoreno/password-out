@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
+use uuid::Uuid;
 
 use super::format::VaultEnvelope;
 
@@ -33,6 +34,17 @@ pub fn read_envelope(path: &Path) -> Result<VaultEnvelope, String> {
 }
 
 pub fn write_envelope(path: &Path, envelope: &VaultEnvelope) -> Result<(), String> {
+    write_envelope_with_replace(path, envelope, replace_file)
+}
+
+fn write_envelope_with_replace<F>(
+    path: &Path,
+    envelope: &VaultEnvelope,
+    replace: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path, &Path) -> Result<(), String>,
+{
     envelope.validate()?;
 
     let parent = path
@@ -53,14 +65,17 @@ pub fn write_envelope(path: &Path, envelope: &VaultEnvelope) -> Result<(), Strin
 
     let temp_path = temporary_path(path);
 
-    let write_result = write_temp_file(&temp_path, &serialized);
-
-    if let Err(error) = write_result {
+    if let Err(error) = write_temp_file(&temp_path, &serialized) {
         let _ = fs::remove_file(&temp_path);
         return Err(error);
     }
 
-    replace_file(&temp_path, path)?;
+    if let Err(error) = replace(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    sync_parent_directory(parent)?;
 
     Ok(())
 }
@@ -105,7 +120,7 @@ fn temporary_path(path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or(VAULT_FILE_NAME);
 
-    let temp_name = format!("{file_name}.{}.tmp", std::process::id());
+    let temp_name = format!("{file_name}.{}.{}.tmp", std::process::id(), Uuid::new_v4());
 
     path.with_file_name(temp_name)
 }
@@ -123,22 +138,42 @@ fn replace_file(temp_path: &Path, final_path: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn replace_file(temp_path: &Path, final_path: &Path) -> Result<(), String> {
-    if final_path.exists() {
-        fs::remove_file(final_path).map_err(|error| {
-            format!(
-                "failed to remove existing vault '{}': {error}",
-                final_path.display()
-            )
-        })?;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let temp_wide = temp_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+
+    let final_wide = final_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+
+    // SAFETY:
+    // - both paths are valid, NUL-terminated UTF-16 buffers;
+    // - the buffers remain alive for the duration of the call;
+    // - MoveFileExW does not retain the pointers.
+    let result = unsafe { MoveFileExW(temp_wide.as_ptr(), final_wide.as_ptr(), flags) };
+
+    if result == 0 {
+        return Err(format!(
+            "failed to atomically replace vault '{}' with '{}': {}",
+            final_path.display(),
+            temp_path.display(),
+            std::io::Error::last_os_error()
+        ));
     }
 
-    fs::rename(temp_path, final_path).map_err(|error| {
-        format!(
-            "failed to move temporary vault '{}' into place '{}': {error}",
-            temp_path.display(),
-            final_path.display()
-        )
-    })
+    Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -159,6 +194,28 @@ fn replace_file(temp_path: &Path, final_path: &Path) -> Result<(), String> {
             final_path.display()
         )
     })
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    let directory = File::open(path).map_err(|error| {
+        format!(
+            "failed to open vault directory '{}' for synchronization: {error}",
+            path.display()
+        )
+    })?;
+
+    directory.sync_all().map_err(|error| {
+        format!(
+            "failed to sync vault directory '{}': {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -202,6 +259,121 @@ mod tests {
                 ciphertext: "Y2lwaGVydGV4dA".to_string(),
             },
         })
+    }
+
+    #[test]
+    fn temporary_paths_are_unique() {
+        let path = PathBuf::from("vault.json");
+
+        let first = temporary_path(&path);
+        let second = temporary_path(&path);
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), path.parent());
+        assert_eq!(second.parent(), path.parent());
+    }
+
+    #[test]
+    fn replaces_existing_vault_without_leaving_temporary_files() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "password-out-storage-replace-test-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+
+        let path = test_dir.join("vault.json");
+
+        let first = sample_envelope();
+        write_envelope(&path, &first).expect("initial write should succeed");
+
+        let mut replacement = sample_envelope();
+
+        let VaultEnvelope::V1(version_1) = &mut replacement else {
+            panic!("sample envelope should use version 1");
+        };
+
+        version_1.cipher.ciphertext = "cmVwbGFjZW1lbnQ".to_string();
+
+        write_envelope(&path, &replacement).expect("replacement write should succeed");
+
+        let loaded = read_envelope(&path).expect("replacement should load");
+
+        assert_eq!(loaded, replacement);
+
+        let remaining_files = fs::read_dir(&test_dir)
+            .expect("test directory should be readable")
+            .map(|entry| {
+                entry
+                    .expect("directory entry should be readable")
+                    .file_name()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            remaining_files,
+            vec![path.file_name().unwrap().to_os_string()]
+        );
+
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn failed_replacement_preserves_original_vault_and_removes_temp_file() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "password-out-storage-failed-replace-test-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+
+        let path = test_dir.join("vault.json");
+
+        let original = sample_envelope();
+
+        write_envelope(&path, &original).expect("initial vault write should succeed");
+
+        let mut replacement = sample_envelope();
+
+        let VaultEnvelope::V1(version_1) = &mut replacement else {
+            panic!("sample envelope should use version 1");
+        };
+
+        version_1.cipher.ciphertext = "bmV3LXZhdWx0LWNpcGhlcnRleHQ".to_string();
+
+        let result = write_envelope_with_replace(&path, &replacement, |temp_path, final_path| {
+            assert!(temp_path.exists());
+            assert_eq!(final_path, path.as_path());
+
+            Err("simulated atomic replacement failure".to_string())
+        });
+
+        assert_eq!(
+            result,
+            Err("simulated atomic replacement failure".to_string())
+        );
+
+        let loaded = read_envelope(&path).expect("original vault should remain readable");
+
+        assert_eq!(
+            loaded, original,
+            "failed replacement must not alter the original vault"
+        );
+
+        let remaining_files = fs::read_dir(&test_dir)
+            .expect("test directory should be readable")
+            .map(|entry| {
+                entry
+                    .expect("directory entry should be readable")
+                    .file_name()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            remaining_files,
+            vec![path.file_name().unwrap().to_os_string()],
+            "failed replacement must remove the temporary vault file"
+        );
+
+        let _ = fs::remove_dir_all(test_dir);
     }
 
     #[test]

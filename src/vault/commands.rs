@@ -1,8 +1,11 @@
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
+use password_out::certificate::{
+    PfxKeyProvider, SelfSignedCertificateOptions, create_self_signed_pfx, load_pfx, write_pfx,
+};
 use password_out::smartcard::{
     certificate::{decode_certificate, parse_certificate_info},
     pcsc::connect_first_card,
@@ -10,26 +13,31 @@ use password_out::smartcard::{
     wrapping::wrap_key_with_cac_certificate,
 };
 
-use crate::entries::{add_entry, list_entries, remove_entry};
 use crate::hotkey;
 
-use super::format::CacKeyWrapper;
-
-use super::service::{initialize_cac_vault, initialize_password_vault};
-use super::{load_vault, prompt_master_password, prompt_new_master_password, save_vault};
+use super::format::{CacKeyWrapper, CertificateBackend};
+use super::service::{
+    initialize_cac_vault, initialize_certificate_vault, initialize_password_vault,
+};
+use super::{
+    PasswordVaultAccess, add_entry_with_access, list_entries_with_access, prompt_master_password,
+    prompt_new_master_password, remove_entry_with_access,
+};
 
 pub fn run_init(path: &Path) -> Result<(), String> {
     println!("Choose the vault unlock method:");
-    println!("  1. Password");
-    println!("  2. CAC");
+    println!("  1. Master password");
+    println!("  2. CAC / PIV smart card");
+    println!("  3. Software X.509 certificate (PFX)");
 
-    let choice = prompt_text("Selection [1-2]: ")?;
+    let choice = prompt_text("Selection [1-3]: ")?;
 
     match choice.as_str() {
         "1" => run_init_password(path)?,
         "2" => run_init_cac(path)?,
+        "3" => run_init_software_certificate(path)?,
         _ => {
-            return Err("selection must be 1 or 2".to_string());
+            return Err("selection must be 1, 2, or 3".to_string());
         }
     }
 
@@ -102,22 +110,137 @@ fn run_init_cac(path: &Path) -> Result<(), String> {
     })
 }
 
+fn run_init_software_certificate(path: &Path) -> Result<(), String> {
+    println!();
+    println!("Choose the software-certificate source:");
+    println!("  1. Generate a new self-signed PFX");
+    println!("  2. Use an existing PFX");
+
+    let choice = prompt_text("Selection [1-2]: ")?;
+
+    match choice.as_str() {
+        "1" => run_init_generated_pfx(path),
+        "2" => run_init_existing_pfx(path),
+        _ => Err("selection must be 1 or 2".to_string()),
+    }
+}
+
+fn run_init_generated_pfx(path: &Path) -> Result<(), String> {
+    println!();
+
+    let default_pfx_path = default_generated_pfx_path(path);
+    let prompt = format!("PFX output path [{}]: ", default_pfx_path.display());
+    let pfx_path = prompt_path_with_default(&prompt, &default_pfx_path)?;
+
+    if pfx_path.exists() {
+        return Err(format!(
+            "refusing to overwrite existing PFX: {}",
+            pfx_path.display()
+        ));
+    }
+
+    ensure_parent_directory(&pfx_path)?;
+
+    let common_name = prompt_text_with_default(
+        "Certificate common name [PasswordOut Vault Key]: ",
+        "PasswordOut Vault Key",
+    )?;
+
+    println!();
+    println!("Create a password for the new PFX private key.");
+
+    let pfx_password = prompt_new_secret("PFX password: ", "Confirm PFX password: ")?;
+
+    let options = SelfSignedCertificateOptions {
+        common_name: common_name.clone(),
+        friendly_name: common_name,
+        validity_days: 3650,
+        rsa_bits: 3072,
+    };
+
+    let generated = create_self_signed_pfx(&options, pfx_password.as_str())?;
+    write_pfx(&pfx_path, &generated.pfx_der)?;
+
+    let loaded = load_pfx(&pfx_path, pfx_password.as_str())?;
+    let provider = PfxKeyProvider::from_loaded_pfx(loaded)?;
+
+    println!();
+    println!("Create a backup password.");
+    println!("This password is required if the PFX is lost, damaged, or unavailable.");
+
+    let backup_password = prompt_new_master_password()?;
+
+    let result = initialize_certificate_vault(
+        path,
+        backup_password.as_str(),
+        &provider,
+        CertificateBackend::Pfx {
+            suggested_filename: pfx_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        },
+    );
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&pfx_path);
+    }
+
+    result?;
+
+    println!();
+    println!("Software certificate created at:");
+    println!("  {}", pfx_path.display());
+    println!("Keep the PFX and its password secure.");
+
+    Ok(())
+}
+
+fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
+    println!();
+
+    let pfx_path = PathBuf::from(prompt_text("Existing PFX path: ")?);
+
+    if !pfx_path.is_file() {
+        return Err(format!("PFX file does not exist: {}", pfx_path.display()));
+    }
+
+    let pfx_password = prompt_secret("PFX password: ")?;
+    let loaded = load_pfx(&pfx_path, pfx_password.as_str())?;
+    let provider = PfxKeyProvider::from_loaded_pfx(loaded)?;
+
+    println!();
+    println!("Create a backup password.");
+    println!("This password is required if the PFX is lost, damaged, or unavailable.");
+
+    let backup_password = prompt_new_master_password()?;
+
+    initialize_certificate_vault(
+        path,
+        backup_password.as_str(),
+        &provider,
+        CertificateBackend::Pfx {
+            suggested_filename: pfx_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        },
+    )
+}
+
 pub fn run_add(path: &Path) -> Result<(), String> {
     let master_password = prompt_master_password("Master password: ")?;
-    let mut payload = load_vault(path, master_password.as_str())?;
+    let mut access = PasswordVaultAccess::new(master_password);
 
     let name = prompt_text("Entry name: ")?;
     let hotkey = hotkey::capture()?;
     let secret = prompt_secret("Password: ")?;
 
-    add_entry(
-        &mut payload,
+    add_entry_with_access(
+        path,
+        &mut access,
         name.clone(),
         hotkey.clone(),
         secret.to_string(),
     )?;
-
-    save_vault(path, &payload, master_password.as_str())?;
 
     println!("Added entry:");
     println!("  {name}  {hotkey}");
@@ -127,8 +250,9 @@ pub fn run_add(path: &Path) -> Result<(), String> {
 
 pub fn run_list(path: &Path) -> Result<(), String> {
     let master_password = prompt_master_password("Master password: ")?;
-    let payload = load_vault(path, master_password.as_str())?;
-    let entries = list_entries(&payload);
+    let mut access = PasswordVaultAccess::new(master_password);
+
+    let entries = list_entries_with_access(path, &mut access)?;
 
     if entries.is_empty() {
         println!("No entries found.");
@@ -146,16 +270,18 @@ pub fn run_list(path: &Path) -> Result<(), String> {
 
 pub fn run_remove(path: &Path) -> Result<(), String> {
     let master_password = prompt_master_password("Master password: ")?;
-    let mut payload = load_vault(path, master_password.as_str())?;
+    let mut access = PasswordVaultAccess::new(master_password);
 
-    if payload.entries.is_empty() {
+    let entries = list_entries_with_access(path, &mut access)?;
+
+    if entries.is_empty() {
         println!("No entries found.");
         return Ok(());
     }
 
     println!("PasswordOut entries:");
 
-    for (name, hotkey) in list_entries(&payload) {
+    for (name, hotkey) in &entries {
         println!("  {name:<20} {hotkey}");
     }
 
@@ -163,15 +289,14 @@ pub fn run_remove(path: &Path) -> Result<(), String> {
 
     let name = prompt_text("Entry name to remove: ")?;
 
-    let entry = payload
-        .entries
+    let (_, hotkey) = entries
         .iter()
-        .find(|entry| entry.name == name)
+        .find(|(entry_name, _)| entry_name == &name)
         .ok_or_else(|| format!("entry '{name}' was not found"))?;
 
     let confirmation = prompt_text(&format!(
         "Type REMOVE to delete '{}' ({}) permanently: ",
-        entry.name, entry.hotkey
+        name, hotkey
     ))?;
 
     if confirmation != "REMOVE" {
@@ -179,14 +304,70 @@ pub fn run_remove(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let removed = remove_entry(&mut payload, &name)?;
-
-    save_vault(path, &payload, master_password.as_str())?;
+    let (removed_name, removed_hotkey) = remove_entry_with_access(path, &mut access, &name)?;
 
     println!("Removed entry:");
-    println!("  {}  {}", removed.name, removed.hotkey);
+    println!("  {removed_name}  {removed_hotkey}");
 
     Ok(())
+}
+
+fn default_generated_pfx_path(vault_path: &Path) -> PathBuf {
+    vault_path.with_extension("pfx")
+}
+
+fn ensure_parent_directory(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("failed to create directory '{}': {error}", parent.display())
+        })?;
+    }
+
+    Ok(())
+}
+
+fn prompt_path_with_default(prompt: &str, default: &Path) -> Result<PathBuf, String> {
+    print!("{prompt}");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush stdout: {error}"))?;
+
+    let mut value = String::new();
+
+    io::stdin()
+        .read_line(&mut value)
+        .map_err(|error| format!("failed to read input: {error}"))?;
+
+    let value = value.trim();
+
+    if value.is_empty() {
+        return Ok(default.to_path_buf());
+    }
+
+    Ok(PathBuf::from(value))
+}
+
+fn prompt_text_with_default(prompt: &str, default: &str) -> Result<String, String> {
+    print!("{prompt}");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush stdout: {error}"))?;
+
+    let mut value = String::new();
+
+    io::stdin()
+        .read_line(&mut value)
+        .map_err(|error| format!("failed to read input: {error}"))?;
+
+    let value = value.trim();
+
+    if value.is_empty() {
+        return Ok(default.to_string());
+    }
+
+    Ok(value.to_string())
 }
 
 fn prompt_text(prompt: &str) -> Result<String, String> {
@@ -211,6 +392,20 @@ fn prompt_text(prompt: &str) -> Result<String, String> {
     }
 
     Ok(value)
+}
+
+fn prompt_new_secret(
+    first_prompt: &str,
+    confirmation_prompt: &str,
+) -> Result<Zeroizing<String>, String> {
+    let first = prompt_secret(first_prompt)?;
+    let confirmation = prompt_secret(confirmation_prompt)?;
+
+    if first.as_str() != confirmation.as_str() {
+        return Err("passwords do not match".to_string());
+    }
+
+    Ok(first)
 }
 
 fn prompt_secret(prompt: &str) -> Result<Zeroizing<String>, String> {

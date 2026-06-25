@@ -6,7 +6,7 @@ use password_out::certificate::{
 
 use std::path::Path;
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::crypto::{
     create_password_wrapper, decrypt_payload_with_key, encrypt_payload_with_key, generate_vault_key,
@@ -139,16 +139,23 @@ pub fn initialize_certificate_vault(
     result
 }
 
-/// Loads a generic X.509 certificate-protected vault.
+/// Retains the recovered certificate-vault key and original unlock wrappers.
 ///
-/// The provider supplies both the certificate identity and the private-key
-/// operation. The vault service verifies that the provider certificate matches
-/// the identity recorded in the vault before decrypting the wrapped vault key.
-#[allow(dead_code)]
-pub fn load_certificate_vault(
+/// The key is zeroized automatically when the session is dropped.
+pub struct CertificateVaultSession {
+    version: u32,
+    unlock: VaultUnlockMethod,
+    vault_key: Zeroizing<[u8; 32]>,
+}
+
+/// Opens a generic X.509 certificate-protected vault and returns a save-capable
+/// session.
+///
+/// The provider certificate must match the identity recorded in the vault.
+pub fn open_certificate_vault_session(
     path: &Path,
     provider: &mut dyn CertificateKeyProvider,
-) -> Result<VaultPayload, String> {
+) -> Result<(VaultPayload, CertificateVaultSession), String> {
     let envelope = read_envelope(path)?;
 
     let VaultEnvelope::V2(version_2) = envelope else {
@@ -184,10 +191,11 @@ pub fn load_certificate_vault(
     )?;
 
     if unwrapped_key.len() != 32 {
+        let actual_length = unwrapped_key.len();
         unwrapped_key.zeroize();
+
         return Err(format!(
-            "certificate provider returned a {}-byte vault key; expected 32 bytes",
-            unwrapped_key.len()
+            "certificate provider returned a {actual_length}-byte vault key; expected 32 bytes"
         ));
     }
 
@@ -195,10 +203,59 @@ pub fn load_certificate_vault(
     vault_key.copy_from_slice(&unwrapped_key);
     unwrapped_key.zeroize();
 
-    let result = decrypt_payload_with_key(&version_2.cipher, &vault_key);
-    vault_key.zeroize();
+    let payload = match decrypt_payload_with_key(&version_2.cipher, &vault_key) {
+        Ok(payload) => payload,
+        Err(error) => {
+            vault_key.zeroize();
+            return Err(error);
+        }
+    };
 
-    result
+    let session = CertificateVaultSession {
+        version: version_2.version,
+        unlock: version_2.unlock,
+        vault_key: Zeroizing::new(vault_key),
+    };
+
+    Ok((payload, session))
+}
+
+/// Saves an updated payload while preserving the original certificate wrapper
+/// and backup-password wrapper.
+///
+/// A fresh payload nonce is generated, but the existing wrapped vault key is
+/// retained.
+pub fn save_certificate_vault_session(
+    path: &Path,
+    payload: &VaultPayload,
+    session: &CertificateVaultSession,
+) -> Result<(), String> {
+    if !matches!(session.unlock, VaultUnlockMethod::Certificate { .. }) {
+        return Err(
+            "certificate session does not contain a certificate unlock wrapper".to_string(),
+        );
+    }
+
+    let cipher = encrypt_payload_with_key(payload, &*session.vault_key)?;
+
+    let envelope = VaultEnvelope::V2(VaultEnvelopeV2 {
+        version: session.version,
+        unlock: session.unlock.clone(),
+        cipher,
+    });
+
+    envelope.validate()?;
+    write_envelope(path, &envelope)
+}
+
+/// Loads a generic X.509 certificate-protected vault without retaining a save
+/// session.
+pub fn load_certificate_vault(
+    path: &Path,
+    provider: &mut dyn CertificateKeyProvider,
+) -> Result<VaultPayload, String> {
+    let (payload, _session) = open_certificate_vault_session(path, provider)?;
+    Ok(payload)
 }
 
 /// Loads a password-unlocked vault.

@@ -3,8 +3,14 @@
 // User-facing CLI commands remain in src/vault/commands.rs and are not
 // included here.
 
+#[path = "vault/access.rs"]
+pub mod access;
+
 #[path = "vault/crypto.rs"]
 pub mod crypto;
+
+#[path = "vault/entry_ops.rs"]
+pub mod entry_ops;
 
 #[path = "vault/format.rs"]
 pub mod format;
@@ -15,7 +21,11 @@ pub mod service;
 #[path = "vault/storage.rs"]
 pub mod storage;
 
+pub use access::{InMemoryVaultAccess, PasswordVaultAccess, VaultAccess};
+
 pub use crypto::{decrypt_payload, encrypt_payload};
+
+pub use entry_ops::{add_entry_with_access, list_entries_with_access, remove_entry_with_access};
 
 pub use format::{
     CertificateBackend, CertificateKeyWrapper, VaultEntry, VaultEnvelope, VaultEnvelopeV2,

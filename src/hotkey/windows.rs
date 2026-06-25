@@ -2,7 +2,7 @@ use super::RuntimeEntry;
 use crate::clipboard;
 
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io;
 use std::mem::zeroed;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null_mut;

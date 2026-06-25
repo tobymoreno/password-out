@@ -20,8 +20,8 @@ pub use password::{prompt_master_password, prompt_new_master_password};
 
 #[allow(unused_imports)]
 pub use service::{
-    CertificateVaultSession, initialize_cac_vault, initialize_certificate_vault,
-    initialize_password_vault, open_certificate_vault_session, recover_vault_with_backup_password,
+    CertificateVaultSession, initialize_certificate_vault, initialize_password_vault,
+    open_certificate_vault_session, recover_vault_with_backup_password,
     rotate_certificate_with_backup_password, save_certificate_vault_session, save_vault,
 };
 

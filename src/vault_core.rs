@@ -36,8 +36,8 @@ pub use format::{
 };
 
 pub use service::{
-    initialize_cac_vault, initialize_certificate_vault, initialize_password_vault,
-    load_certificate_vault, load_password_vault, save_password_vault, save_vault,
+    initialize_certificate_vault, initialize_password_vault, load_certificate_vault,
+    load_password_vault, save_password_vault, save_vault,
 };
 
 pub use storage::{default_vault_path, read_envelope, write_envelope};

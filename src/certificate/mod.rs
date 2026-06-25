@@ -1,3 +1,4 @@
+mod cac;
 mod identity;
 mod key_wrap;
 mod pfx;
@@ -5,6 +6,7 @@ mod provider;
 mod self_signed;
 mod service;
 
+pub use cac::{CacCertificateSource, CacKeyProvider};
 pub use identity::{
     CertificateIdentity, certificate_identity, certificate_identity_from_der,
     verify_certificate_identity,

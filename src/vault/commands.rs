@@ -16,7 +16,10 @@ use password_out::smartcard::{
 use crate::hotkey;
 
 use super::access::{CertificateVaultAccess, PasswordVaultAccess, VaultAccess};
-use super::format::{CertificateBackend, VaultEnvelope, VaultUnlockMethod};
+use super::format::{
+    CertificateBackend, MAX_CLIPBOARD_CLEAR_SECONDS, MIN_CLIPBOARD_CLEAR_SECONDS, VaultEnvelope,
+    VaultUnlockMethod,
+};
 use super::service::{
     initialize_certificate_vault, initialize_password_vault,
     rotate_certificate_with_backup_password,
@@ -228,6 +231,50 @@ fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
 
 pub fn run_info(path: &Path) -> Result<(), String> {
     print!("{}", format_vault_info(path)?);
+    Ok(())
+}
+
+pub fn run_timeout(path: &Path) -> Result<(), String> {
+    let mut access = create_vault_access(path)?;
+    let mut payload = load_payload_with_access(path, access.as_mut())?;
+
+    println!(
+        "Current clipboard clear timeout: {} seconds",
+        payload.settings.clipboard_clear_seconds
+    );
+
+    let prompt = format!(
+        "New timeout in seconds ({}-{}, press Enter to keep current): ",
+        MIN_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_CLEAR_SECONDS
+    );
+
+    let value = prompt_optional_text(&prompt)?;
+
+    let Some(value) = value else {
+        println!("Clipboard clear timeout unchanged.");
+        return Ok(());
+    };
+
+    let seconds = value.parse::<u64>().map_err(|_| {
+        format!(
+            "timeout must be a whole number between {} and {}",
+            MIN_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_CLEAR_SECONDS
+        )
+    })?;
+
+    if !(MIN_CLIPBOARD_CLEAR_SECONDS..=MAX_CLIPBOARD_CLEAR_SECONDS).contains(&seconds) {
+        return Err(format!(
+            "timeout must be between {} and {} seconds",
+            MIN_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_CLEAR_SECONDS
+        ));
+    }
+
+    payload.settings.clipboard_clear_seconds = seconds;
+    payload.validate()?;
+    access.save(path, &payload)?;
+
+    println!("Clipboard clear timeout updated to {seconds} seconds.");
+
     Ok(())
 }
 
@@ -775,6 +822,27 @@ fn prompt_path_with_default(prompt: &str, default: &Path) -> Result<PathBuf, Str
     Ok(PathBuf::from(value))
 }
 
+fn prompt_optional_text(prompt: &str) -> Result<Option<String>, String> {
+    print!("{prompt}");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush stdout: {error}"))?;
+
+    let mut value = String::new();
+
+    io::stdin()
+        .read_line(&mut value)
+        .map_err(|error| format!("failed to read input: {error}"))?;
+
+    let value = value.trim();
+
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(value.to_string()))
+}
+
 fn prompt_text_with_default(prompt: &str, default: &str) -> Result<String, String> {
     print!("{prompt}");
     io::stdout()
@@ -873,6 +941,7 @@ mod vault_info_tests {
         let path = PathBuf::from("unused-test-vault.json");
 
         let expected = VaultPayload {
+            settings: crate::vault::format::VaultSettings::default(),
             entries: vec![VaultEntry {
                 name: "listener-user".to_string(),
                 hotkey: "CTRL+ALT+1".to_string(),

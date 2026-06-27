@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
-const DEFAULT_CLEAR_SECONDS: u64 = 30;
-
 /// Credentials at the press of a chord.
 ///
 /// PasswordOut is a cross-platform, hotkey-driven credential manager. It maps
@@ -33,13 +31,8 @@ pub struct Cli {
     vault: Option<PathBuf>,
 
     /// Number of seconds to retain a copied secret in the clipboard.
-    #[arg(
-        long,
-        global = true,
-        value_name = "SECONDS",
-        default_value_t = DEFAULT_CLEAR_SECONDS
-    )]
-    clear_seconds: u64,
+    #[arg(long, global = true, value_name = "SECONDS")]
+    clear_seconds: Option<u64>,
 
     /// Internal helper used to display a short-lived overlay.
     #[arg(long, hide = true, value_name = "MESSAGE")]
@@ -86,6 +79,9 @@ enum VaultCommand {
 
     /// Display non-secret metadata about an encrypted vault.
     Info,
+
+    /// View or change the encrypted clipboard-clear timeout.
+    Timeout,
 }
 
 #[derive(Debug, Args)]
@@ -113,6 +109,7 @@ pub enum Mode {
     VaultRecover,
     VaultRotateCertificate,
     VaultInfo,
+    VaultTimeout,
     EntryAdd,
     EntryList,
     EntryRemove,
@@ -125,7 +122,7 @@ pub enum Mode {
 pub struct Config {
     pub mode: Mode,
     pub vault_file: PathBuf,
-    pub clear_seconds: u64,
+    pub clear_seconds: Option<u64>,
 }
 
 pub fn parse_args(default_vault_path: PathBuf) -> Result<Config, String> {
@@ -165,6 +162,10 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
                 command: VaultCommand::Info,
             })) => Mode::VaultInfo,
 
+            Some(Command::Vault(VaultArgs {
+                command: VaultCommand::Timeout,
+            })) => Mode::VaultTimeout,
+
             Some(Command::Entry(EntryArgs {
                 command: EntryCommand::Add,
             })) => Mode::EntryAdd,
@@ -179,7 +180,7 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
 
             None => {
                 return Err(
-                    "missing mode: use --listen, vault init, vault recover, vault rotate-certificate, vault info, entry add, entry list, or entry remove"
+                    "missing mode: use --listen, vault init, vault recover, vault rotate-certificate, vault info, vault timeout, entry add, entry list, or entry remove"
                         .to_string(),
                 );
             }

@@ -138,8 +138,32 @@ pub struct CipherPayload {
     pub ciphertext: String,
 }
 
+pub const DEFAULT_CLIPBOARD_CLEAR_SECONDS: u64 = 30;
+pub const MIN_CLIPBOARD_CLEAR_SECONDS: u64 = 1;
+pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 86_400;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VaultSettings {
+    #[serde(default = "default_clipboard_clear_seconds")]
+    pub clipboard_clear_seconds: u64,
+}
+
+impl Default for VaultSettings {
+    fn default() -> Self {
+        Self {
+            clipboard_clear_seconds: default_clipboard_clear_seconds(),
+        }
+    }
+}
+
+const fn default_clipboard_clear_seconds() -> u64 {
+    DEFAULT_CLIPBOARD_CLEAR_SECONDS
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VaultPayload {
+    #[serde(default)]
+    pub settings: VaultSettings,
     pub entries: Vec<VaultEntry>,
 }
 
@@ -366,7 +390,26 @@ impl CipherPayload {
     }
 }
 
+impl VaultSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(MIN_CLIPBOARD_CLEAR_SECONDS..=MAX_CLIPBOARD_CLEAR_SECONDS)
+            .contains(&self.clipboard_clear_seconds)
+        {
+            return Err(format!(
+                "clipboard clear timeout must be between {} and {} seconds",
+                MIN_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_CLEAR_SECONDS
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 impl VaultPayload {
+    pub fn validate(&self) -> Result<(), String> {
+        self.settings.validate()
+    }
+
     pub fn find_entry(&self, name: &str) -> Option<&VaultEntry> {
         self.entries.iter().find(|entry| entry.name == name)
     }
@@ -412,6 +455,7 @@ mod tests {
     #[test]
     fn payload_can_find_entries() {
         let payload = VaultPayload {
+            settings: VaultSettings::default(),
             entries: vec![VaultEntry {
                 name: "admin01".to_string(),
                 hotkey: "CTRL+ALT+1".to_string(),
@@ -429,6 +473,29 @@ mod tests {
         );
 
         assert!(!payload.contains_name("missing"));
+    }
+
+    #[test]
+    fn payload_without_settings_uses_default_timeout() {
+        let payload: VaultPayload =
+            serde_json::from_str(r#"{"entries":[]}"#).expect("legacy payload should deserialize");
+
+        assert_eq!(
+            payload.settings.clipboard_clear_seconds,
+            DEFAULT_CLIPBOARD_CLEAR_SECONDS
+        );
+    }
+
+    #[test]
+    fn payload_settings_validate_timeout_range() {
+        let mut settings = VaultSettings::default();
+        assert!(settings.validate().is_ok());
+
+        settings.clipboard_clear_seconds = 0;
+        assert!(settings.validate().is_err());
+
+        settings.clipboard_clear_seconds = MAX_CLIPBOARD_CLEAR_SECONDS + 1;
+        assert!(settings.validate().is_err());
     }
 
     #[test]

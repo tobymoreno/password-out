@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(long, hide = true, value_name = "MESSAGE")]
     overlay: Option<String>,
 
+    /// Internal helper used to display the clipboard timeout countdown.
+    #[arg(long, hide = true, value_name = "SECONDS")]
+    countdown: Option<u64>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -114,8 +118,9 @@ pub enum Mode {
     EntryList,
     EntryRemove,
 
-    // Internal helper mode. Users should not call this directly.
+    // Internal helper modes. Users should not call these directly.
     Overlay(String),
+    Countdown(u64),
 }
 
 #[derive(Debug)]
@@ -133,11 +138,21 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
     let vault_file = cli.vault.unwrap_or(default_vault_path);
 
     let mode = if let Some(message) = cli.overlay {
-        if cli.listen || cli.command.is_some() {
+        if cli.countdown.is_some() || cli.listen || cli.command.is_some() {
             return Err("--overlay cannot be combined with another mode".to_string());
         }
 
         Mode::Overlay(message)
+    } else if let Some(seconds) = cli.countdown {
+        if cli.listen || cli.command.is_some() {
+            return Err("--countdown cannot be combined with another mode".to_string());
+        }
+
+        if seconds == 0 {
+            return Err("--countdown must be greater than zero".to_string());
+        }
+
+        Mode::Countdown(seconds)
     } else if cli.listen {
         if cli.command.is_some() {
             return Err("--listen cannot be combined with a subcommand".to_string());

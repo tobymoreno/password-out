@@ -231,6 +231,15 @@ fn run_init_existing_pfx(path: &Path) -> Result<(), String> {
 
 pub fn run_info(path: &Path) -> Result<(), String> {
     print!("{}", format_vault_info(path)?);
+
+    let mut access = create_vault_access(path)?;
+    let payload = load_payload_with_access(path, access.as_mut())?;
+
+    println!(
+        "  Clipboard clear timeout: {} seconds",
+        payload.settings.clipboard_clear_seconds
+    );
+
     Ok(())
 }
 

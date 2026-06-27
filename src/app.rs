@@ -47,5 +47,10 @@ pub fn run() -> Result<(), String> {
             overlay::show_overlay(&message);
             Ok(())
         }
+
+        Mode::Countdown(seconds) => {
+            overlay::show_countdown(seconds);
+            Ok(())
+        }
     }
 }

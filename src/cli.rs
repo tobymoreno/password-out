@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
-const DEFAULT_CLEAR_SECONDS: u64 = 30;
-
 /// Credentials at the press of a chord.
 ///
 /// PasswordOut is a cross-platform, hotkey-driven credential manager. It maps
@@ -33,17 +31,16 @@ pub struct Cli {
     vault: Option<PathBuf>,
 
     /// Number of seconds to retain a copied secret in the clipboard.
-    #[arg(
-        long,
-        global = true,
-        value_name = "SECONDS",
-        default_value_t = DEFAULT_CLEAR_SECONDS
-    )]
-    clear_seconds: u64,
+    #[arg(long, global = true, value_name = "SECONDS")]
+    clear_seconds: Option<u64>,
 
     /// Internal helper used to display a short-lived overlay.
     #[arg(long, hide = true, value_name = "MESSAGE")]
     overlay: Option<String>,
+
+    /// Internal helper used to display the clipboard timeout countdown.
+    #[arg(long, hide = true, value_name = "SECONDS")]
+    countdown: Option<u64>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -86,6 +83,9 @@ enum VaultCommand {
 
     /// Display non-secret metadata about an encrypted vault.
     Info,
+
+    /// View or change the encrypted clipboard-clear timeout.
+    Timeout,
 }
 
 #[derive(Debug, Args)]
@@ -113,19 +113,21 @@ pub enum Mode {
     VaultRecover,
     VaultRotateCertificate,
     VaultInfo,
+    VaultTimeout,
     EntryAdd,
     EntryList,
     EntryRemove,
 
-    // Internal helper mode. Users should not call this directly.
+    // Internal helper modes. Users should not call these directly.
     Overlay(String),
+    Countdown(u64),
 }
 
 #[derive(Debug)]
 pub struct Config {
     pub mode: Mode,
     pub vault_file: PathBuf,
-    pub clear_seconds: u64,
+    pub clear_seconds: Option<u64>,
 }
 
 pub fn parse_args(default_vault_path: PathBuf) -> Result<Config, String> {
@@ -136,11 +138,21 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
     let vault_file = cli.vault.unwrap_or(default_vault_path);
 
     let mode = if let Some(message) = cli.overlay {
-        if cli.listen || cli.command.is_some() {
+        if cli.countdown.is_some() || cli.listen || cli.command.is_some() {
             return Err("--overlay cannot be combined with another mode".to_string());
         }
 
         Mode::Overlay(message)
+    } else if let Some(seconds) = cli.countdown {
+        if cli.listen || cli.command.is_some() {
+            return Err("--countdown cannot be combined with another mode".to_string());
+        }
+
+        if seconds == 0 {
+            return Err("--countdown must be greater than zero".to_string());
+        }
+
+        Mode::Countdown(seconds)
     } else if cli.listen {
         if cli.command.is_some() {
             return Err("--listen cannot be combined with a subcommand".to_string());
@@ -165,6 +177,10 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
                 command: VaultCommand::Info,
             })) => Mode::VaultInfo,
 
+            Some(Command::Vault(VaultArgs {
+                command: VaultCommand::Timeout,
+            })) => Mode::VaultTimeout,
+
             Some(Command::Entry(EntryArgs {
                 command: EntryCommand::Add,
             })) => Mode::EntryAdd,
@@ -179,7 +195,7 @@ fn parse_from(cli: Cli, default_vault_path: PathBuf) -> Result<Config, String> {
 
             None => {
                 return Err(
-                    "missing mode: use --listen, vault init, vault recover, vault rotate-certificate, vault info, entry add, entry list, or entry remove"
+                    "missing mode: use --listen, vault init, vault recover, vault rotate-certificate, vault info, vault timeout, entry add, entry list, or entry remove"
                         .to_string(),
                 );
             }

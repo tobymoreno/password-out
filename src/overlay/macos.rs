@@ -14,7 +14,7 @@ use std::time::Duration;
 const SINGLE_LINE_FONT_SIZE: f64 = 44.0;
 const MULTILINE_FONT_SIZE: f64 = 44.0;
 const MULTILINE_LINE_HEIGHT: f64 = 44.0;
-const COUNTDOWN_FONT_SIZE: f64 = 34.0;
+const COUNTDOWN_FONT_SIZE: f64 = 28.0;
 
 const SINGLE_HORIZONTAL_PADDING: f64 = 80.0;
 const SINGLE_VERTICAL_PADDING: f64 = 30.0;
@@ -23,18 +23,19 @@ const MULTILINE_HORIZONTAL_PADDING: f64 = 56.0;
 const MULTILINE_VERTICAL_PADDING: f64 = 40.0;
 const MULTILINE_CHARACTER_WIDTH_FACTOR: f64 = 0.62;
 
-const COUNTDOWN_WIDTH: f64 = 360.0;
-const COUNTDOWN_HEIGHT: f64 = 210.0;
+const COUNTDOWN_WIDTH: f64 = 390.0;
+const COUNTDOWN_HEIGHT: f64 = 72.0;
 
 const MIN_WIDTH: f64 = 320.0;
 const MAX_MULTILINE_WIDTH: f64 = 1100.0;
 const SCREEN_MARGIN: f64 = 40.0;
 const TOP_MARGIN: f64 = 40.0;
 const RIGHT_MARGIN: f64 = 40.0;
+const LEFT_MARGIN: f64 = 28.0;
+const BOTTOM_MARGIN: f64 = 28.0;
 
 const DISPLAY_DURATION: Duration = Duration::from_millis(1_600);
 const COUNTDOWN_TICK: Duration = Duration::from_secs(1);
-const CLEARED_DURATION: Duration = Duration::from_millis(900);
 
 const FALLBACK_SCREEN_WIDTH: f64 = 1_440.0;
 const FALLBACK_SCREEN_HEIGHT: f64 = 900.0;
@@ -233,9 +234,9 @@ fn positioned_center_frame(screen_frame: NSRect, width: f64, height: f64) -> NSR
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
-fn positioned_top_right_frame(screen_frame: NSRect, width: f64, height: f64) -> NSRect {
-    let x = screen_frame.origin.x + screen_frame.size.width - width - RIGHT_MARGIN;
-    let y = screen_frame.origin.y + screen_frame.size.height - height - TOP_MARGIN;
+fn positioned_bottom_left_frame(screen_frame: NSRect, width: f64, height: f64) -> NSRect {
+    let x = screen_frame.origin.x + LEFT_MARGIN;
+    let y = screen_frame.origin.y + BOTTOM_MARGIN;
 
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
@@ -265,8 +266,8 @@ unsafe fn resize_label(label: id, window_frame: NSRect, is_multiline: bool) {
 }
 
 unsafe fn resize_countdown_view(text_view: id, window_frame: NSRect) {
-    let horizontal_inset = 24.0;
-    let vertical_inset = 22.0;
+    let horizontal_inset = 12.0;
+    let vertical_inset = 12.0;
 
     let frame = NSRect::new(
         NSPoint::new(horizontal_inset, vertical_inset),
@@ -318,7 +319,7 @@ fn schedule_exit() {
 }
 
 fn countdown_message(remaining_seconds: u64) -> String {
-    format!("PASSWORD OUT\n{remaining_seconds:02} SEC\nAUTO CLEAR")
+    format!("Password Timeout: {remaining_seconds}s")
 }
 
 unsafe extern "C" fn apply_countdown_update(context: *mut c_void) {
@@ -355,12 +356,6 @@ fn schedule_countdown(text_view: id, total_seconds: u64) {
         }
 
         std::thread::sleep(COUNTDOWN_TICK);
-        queue_countdown_update(
-            text_view,
-            "PASSWORD OUT\nCLEARED\nCLIPBOARD EMPTY".to_string(),
-        );
-
-        std::thread::sleep(CLEARED_DURATION);
         std::process::exit(0);
     });
 }
@@ -426,11 +421,11 @@ pub fn show_countdown(total_seconds: u64) {
             countdown_font(),
             text_color,
             clear_color,
-            ALIGN_CENTER,
+            ALIGN_LEFT,
         );
 
         let window_frame =
-            positioned_top_right_frame(screen_frame, COUNTDOWN_WIDTH, COUNTDOWN_HEIGHT);
+            positioned_bottom_left_frame(screen_frame, COUNTDOWN_WIDTH, COUNTDOWN_HEIGHT);
 
         resize_countdown_view(text_view, window_frame);
 

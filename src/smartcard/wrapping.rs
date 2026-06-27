@@ -70,7 +70,7 @@ pub fn wrap_key_with_cac_certificate(
 ///
 /// Expected structure:
 ///
-///     00 02 PS 00 M
+/// `00 02 PS 00 M`
 ///
 /// where PS contains at least eight non-zero random bytes.
 pub fn decode_pkcs1_v15_encoded_message(encoded_message: &[u8]) -> Result<Vec<u8>> {

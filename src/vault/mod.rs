@@ -12,7 +12,7 @@ pub mod storage;
 
 pub use commands::{
     load_payload_for_cli, run_add, run_info, run_init, run_list, run_recover, run_remove,
-    run_rotate_certificate,
+    run_rotate_certificate, run_timeout,
 };
 pub use crypto::{decrypt_payload, encrypt_payload};
 pub use format::{VaultEntry, VaultPayload};

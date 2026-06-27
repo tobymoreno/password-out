@@ -31,15 +31,11 @@ const TOP_MARGIN: i32 = 40;
 const SINGLE_LINE_DURATION_MS: u32 = 1_600;
 const MULTILINE_DURATION_MS: u32 = 5_000;
 const COUNTDOWN_TICK_MS: u32 = 1_000;
-const CLEARED_DURATION_MS: u32 = 900;
 const TIMER_ID: usize = 1;
 
 enum OverlayMode {
     Message,
-    Countdown {
-        remaining_seconds: u64,
-        showing_cleared: bool,
-    },
+    Countdown { remaining_seconds: u64 },
 }
 
 struct OverlayState {
@@ -57,9 +53,7 @@ fn green_color() -> u32 {
 }
 
 fn countdown_text(remaining_seconds: u64) -> Vec<u16> {
-    wide(&format!(
-        "PASSWORD OUT\n\n{remaining_seconds:02} SEC\n\nAUTO CLEAR"
-    ))
+    wide(&format!("Password Timeout: {remaining_seconds}s"))
 }
 
 unsafe fn state_ptr(hwnd: HWND) -> *mut OverlayState {
@@ -154,32 +148,20 @@ unsafe extern "system" fn window_proc(
                     DestroyWindow(hwnd);
                 },
 
-                OverlayMode::Countdown {
-                    remaining_seconds,
-                    showing_cleared,
-                } => {
-                    if *showing_cleared {
-                        unsafe {
-                            DestroyWindow(hwnd);
-                        }
-                        return 0;
-                    }
-
+                OverlayMode::Countdown { remaining_seconds } => {
                     if *remaining_seconds > 0 {
                         *remaining_seconds -= 1;
                     }
 
                     if *remaining_seconds == 0 {
-                        *showing_cleared = true;
-                        state.text = wide("PASSWORD OUT\n\nCLEARED\n\nCLIPBOARD EMPTY");
-
                         unsafe {
                             KillTimer(hwnd, TIMER_ID);
-                            SetTimer(hwnd, TIMER_ID, CLEARED_DURATION_MS, None);
+                            DestroyWindow(hwnd);
                         }
-                    } else {
-                        state.text = countdown_text(*remaining_seconds);
+                        return 0;
                     }
+
+                    state.text = countdown_text(*remaining_seconds);
 
                     unsafe {
                         InvalidateRect(hwnd, null(), 1);
@@ -400,14 +382,13 @@ fn show_message_inner(message: &str) -> Result<(), String> {
 }
 
 fn show_countdown_inner(total_seconds: u64) -> Result<(), String> {
-    let initial_message = format!("PASSWORD OUT\n\n{total_seconds:02} SEC\n\nAUTO CLEAR");
+    let initial_message = format!("Password Timeout: {total_seconds}s");
 
     let state = OverlayState {
         text: wide(&initial_message),
         font: 0,
         mode: OverlayMode::Countdown {
             remaining_seconds: total_seconds,
-            showing_cleared: false,
         },
     };
 
@@ -468,11 +449,25 @@ fn run_overlay(
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
 
-    const RIGHT_MARGIN: i32 = 40;
     const TOP_MARGIN: i32 = 40;
+    const LEFT_MARGIN: i32 = 28;
+    const BOTTOM_MARGIN: i32 = 28;
 
-    let x = (screen_width - width - RIGHT_MARGIN).max(0);
-    let y = TOP_MARGIN.min((screen_height - height).max(0));
+    let (x, y) = match &state.mode {
+        OverlayMode::Message => {
+            let x = ((screen_width - width) / 2).max(0);
+            let y = TOP_MARGIN.min((screen_height - height).max(0));
+
+            (x, y)
+        }
+
+        OverlayMode::Countdown { .. } => {
+            let x = LEFT_MARGIN.min((screen_width - width).max(0));
+            let y = (screen_height - height - BOTTOM_MARGIN).max(0);
+
+            (x, y)
+        }
+    };
 
     let extended_style =
         WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT;

@@ -140,6 +140,7 @@ mod tests {
     #[test]
     fn removes_entries() {
         let mut payload = VaultPayload {
+            settings: Default::default(),
             entries: vec![VaultEntry {
                 name: "admin01".to_string(),
                 hotkey: "CTRL+ALT+1".to_string(),

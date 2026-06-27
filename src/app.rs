@@ -10,6 +10,10 @@ pub fn run() -> Result<(), String> {
         Mode::Listen => {
             let payload = vault::load_payload_for_cli(&config.vault_file)?;
 
+            let clear_seconds = config
+                .clear_seconds
+                .unwrap_or(payload.settings.clipboard_clear_seconds);
+
             let runtime_entries = payload
                 .entries
                 .into_iter()
@@ -20,7 +24,7 @@ pub fn run() -> Result<(), String> {
                 })
                 .collect();
 
-            hotkey::listen(runtime_entries, config.clear_seconds)
+            hotkey::listen(runtime_entries, clear_seconds)
         }
 
         Mode::VaultInit => vault::run_init(&config.vault_file),
@@ -31,6 +35,8 @@ pub fn run() -> Result<(), String> {
 
         Mode::VaultInfo => vault::run_info(&config.vault_file),
 
+        Mode::VaultTimeout => vault::run_timeout(&config.vault_file),
+
         Mode::EntryAdd => vault::run_add(&config.vault_file),
 
         Mode::EntryList => vault::run_list(&config.vault_file),
@@ -39,6 +45,11 @@ pub fn run() -> Result<(), String> {
 
         Mode::Overlay(message) => {
             overlay::show_overlay(&message);
+            Ok(())
+        }
+
+        Mode::Countdown(seconds) => {
+            overlay::show_countdown(seconds);
             Ok(())
         }
     }

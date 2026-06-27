@@ -66,6 +66,7 @@ mod tests {
 
     fn payload_with_entry() -> VaultPayload {
         VaultPayload {
+            settings: Default::default(),
             entries: vec![VaultEntry {
                 name: "GitHub".to_string(),
                 hotkey: "CTRL+ALT+G".to_string(),

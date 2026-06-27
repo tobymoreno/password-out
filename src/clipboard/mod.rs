@@ -2,7 +2,7 @@
 mod macos;
 
 #[cfg(target_os = "macos")]
-pub use macos::{clear_clipboard_if_matches_after, copy_to_clipboard};
+pub use macos::{clear_if_matches, copy_to_clipboard, current_text};
 
 #[cfg(target_os = "windows")]
 mod windows;

@@ -427,6 +427,28 @@ fn show_overlay_helper(message: &str) {
     let _ = spawn_overlay_helper(message);
 }
 
+fn show_countdown_helper(clear_seconds: u64) {
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+
+        Err(error) => {
+            eprintln!("password-out error: failed to locate current executable: {error}");
+            return;
+        }
+    };
+
+    if let Err(error) = Command::new(executable)
+        .arg("--countdown")
+        .arg(clear_seconds.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        eprintln!("password-out error: failed to spawn countdown helper: {error}");
+    }
+}
+
 fn key_is_down(virtual_key: i32) -> bool {
     unsafe { GetAsyncKeyState(virtual_key) < 0 }
 }
@@ -590,6 +612,8 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
         }
 
         clipboard::clear_clipboard_if_matches_after(entry.secret.clone(), clear_seconds);
+
+        show_countdown_helper(clear_seconds);
 
         println!("Copied secret for '{}'.", entry.name);
 

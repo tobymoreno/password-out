@@ -8,12 +8,15 @@ use global_hotkey::{
 };
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const LIST_HOTKEY: &str = "CTRL+ALT+SHIFT+L";
+const CLEAR_HOTKEY: &str = "CTRL+ALT+SPACE";
 
 fn parse_hotkey(input: &str) -> Result<HotKey, String> {
     let canonical = canonicalize(input)?;
@@ -74,6 +77,7 @@ fn parse_hotkey(input: &str) -> Result<HotKey, String> {
             "F10" => key_code = Some(Code::F10),
             "F11" => key_code = Some(Code::F11),
             "F12" => key_code = Some(Code::F12),
+            "SPACE" => key_code = Some(Code::Space),
             other => {
                 return Err(format!("unsupported canonical hotkey token: {other}"));
             }
@@ -155,7 +159,18 @@ fn is_supported_primary_key(token: &str) -> bool {
 
     matches!(
         token,
-        "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12"
+        "F1" | "F2"
+            | "F3"
+            | "F4"
+            | "F5"
+            | "F6"
+            | "F7"
+            | "F8"
+            | "F9"
+            | "F10"
+            | "F11"
+            | "F12"
+            | "SPACE"
     )
 }
 
@@ -278,7 +293,8 @@ fn spawn_overlay_helper(message: &str, persistent: bool) -> Option<Child> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .current_dir("/");
+        .current_dir("/")
+        .process_group(0);
 
     if persistent {
         command.env("PASSWORD_OUT_OVERLAY_PERSISTENT", "1");
@@ -297,26 +313,153 @@ fn show_overlay_helper(message: &str) {
     let _ = spawn_overlay_helper(message, false);
 }
 
-fn show_countdown_helper(clear_seconds: u64) {
+fn show_countdown_helper(clear_seconds: u64) -> Option<Child> {
     let executable = match std::env::current_exe() {
         Ok(path) => path,
         Err(error) => {
             eprintln!("password-out error: failed to locate current executable: {error}");
-            return;
+            return None;
         }
     };
 
-    if let Err(error) = Command::new(executable)
+    match Command::new(executable)
         .arg("--countdown")
         .arg(clear_seconds.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .current_dir("/")
+        .process_group(0)
         .spawn()
     {
-        eprintln!("password-out error: failed to spawn countdown helper: {error}");
+        Ok(child) => Some(child),
+        Err(error) => {
+            eprintln!("password-out error: failed to spawn countdown helper: {error}");
+            None
+        }
     }
+}
+
+static NEXT_CLIPBOARD_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+struct ActiveClipboardSecret {
+    generation: u64,
+    secret: String,
+    countdown: Option<Child>,
+}
+
+type SharedClipboardState = Arc<Mutex<Option<ActiveClipboardSecret>>>;
+
+fn stop_countdown(countdown: &mut Option<Child>) {
+    if let Some(mut child) = countdown.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn deactivate_if_generation_matches(state: &SharedClipboardState, generation: u64) {
+    let Ok(mut active) = state.lock() else {
+        return;
+    };
+
+    let Some(current) = active.as_mut() else {
+        return;
+    };
+
+    if current.generation != generation {
+        return;
+    }
+
+    stop_countdown(&mut current.countdown);
+    *active = None;
+}
+
+fn activate_clipboard_secret(state: &SharedClipboardState, secret: String, clear_seconds: u64) {
+    let generation = NEXT_CLIPBOARD_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let countdown = show_countdown_helper(clear_seconds);
+
+    if let Ok(mut active) = state.lock() {
+        if let Some(previous) = active.as_mut() {
+            stop_countdown(&mut previous.countdown);
+        }
+
+        *active = Some(ActiveClipboardSecret {
+            generation,
+            secret: secret.clone(),
+            countdown,
+        });
+    }
+
+    let timeout_state = Arc::clone(state);
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(clear_seconds));
+
+        let should_clear = timeout_state
+            .lock()
+            .ok()
+            .and_then(|active| {
+                active
+                    .as_ref()
+                    .map(|current| current.generation == generation && current.secret == secret)
+            })
+            .unwrap_or(false);
+
+        if !should_clear {
+            return;
+        }
+
+        let _ = clipboard::clear_if_matches(&secret);
+        deactivate_if_generation_matches(&timeout_state, generation);
+    });
+}
+
+fn clear_active_clipboard(state: &SharedClipboardState) {
+    let snapshot = state.lock().ok().and_then(|active| {
+        active
+            .as_ref()
+            .map(|current| (current.generation, current.secret.clone()))
+    });
+
+    let Some((generation, secret)) = snapshot else {
+        return;
+    };
+
+    match clipboard::clear_if_matches(&secret) {
+        Ok(true) => {
+            println!("Cleared active PasswordOut secret from clipboard.");
+            deactivate_if_generation_matches(state, generation);
+        }
+        Ok(false) => {
+            deactivate_if_generation_matches(state, generation);
+        }
+        Err(error) => {
+            eprintln!("password-out error: {error}");
+        }
+    }
+}
+
+fn start_clipboard_replacement_monitor(state: SharedClipboardState) {
+    thread::spawn(move || {
+        loop {
+            let snapshot = state.lock().ok().and_then(|active| {
+                active
+                    .as_ref()
+                    .map(|current| (current.generation, current.secret.clone()))
+            });
+
+            if let Some((generation, secret)) = snapshot {
+                match clipboard::current_text() {
+                    Ok(current) if current != secret => {
+                        deactivate_if_generation_matches(&state, generation);
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
 }
 
 fn build_entry_list_overlay(entries: &[RuntimeEntry]) -> String {
@@ -343,9 +486,14 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
     let manager = GlobalHotKeyManager::new()
         .map_err(|error| format!("failed to create hotkey manager: {error}"))?;
 
+    let clipboard_state: SharedClipboardState = Arc::new(Mutex::new(None));
+    start_clipboard_replacement_monitor(Arc::clone(&clipboard_state));
+
     let list_overlay_message = build_entry_list_overlay(&entries);
     let list_hotkey = parse_hotkey(LIST_HOTKEY)?;
     let list_hotkey_id = list_hotkey.id();
+    let clear_hotkey = parse_hotkey(CLEAR_HOTKEY)?;
+    let clear_hotkey_id = clear_hotkey.id();
 
     let mut id_to_entry: HashMap<u32, RuntimeEntry> = HashMap::new();
 
@@ -376,14 +524,21 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
         format!("failed to register entry-list hotkey '{LIST_HOTKEY}': {error}")
     })?;
 
+    manager.register(clear_hotkey).map_err(|error| {
+        format!("failed to register clipboard-clear hotkey '{CLEAR_HOTKEY}': {error}")
+    })?;
+
     println!("  {:<20} {}", "show entry list", LIST_HOTKEY);
+    println!("  {:<20} {}", "clear active secret", CLEAR_HOTKEY);
     println!();
     println!("Leave this running. Press Ctrl+C to stop.");
     println!("Hold {LIST_HOTKEY} to show available entries.");
     println!("Release the chord to hide the entry list.");
     println!("Click into any GUI application, press a credential hotkey, then Command+V.");
+    println!("Press {CLEAR_HOTKEY} to clear an active PasswordOut secret immediately.");
 
     let worker_entries = Arc::new(id_to_entry);
+    let worker_clipboard_state = Arc::clone(&clipboard_state);
 
     thread::spawn(move || {
         let debounce_ms: u128 = 500;
@@ -393,6 +548,14 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
         loop {
             match GlobalHotKeyEvent::receiver().recv() {
                 Ok(event) => {
+                    if event.id == clear_hotkey_id {
+                        if event.state == HotKeyState::Pressed {
+                            clear_active_clipboard(&worker_clipboard_state);
+                        }
+
+                        continue;
+                    }
+
                     if event.id == list_hotkey_id {
                         match event.state {
                             HotKeyState::Pressed => {
@@ -462,12 +625,11 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
                         continue;
                     }
 
-                    clipboard::clear_clipboard_if_matches_after(
+                    activate_clipboard_secret(
+                        &worker_clipboard_state,
                         entry.secret.clone(),
                         clear_seconds,
                     );
-
-                    show_countdown_helper(clear_seconds);
 
                     println!("Copied secret for '{}'.", entry.name);
 

@@ -6,13 +6,15 @@ use std::io;
 use std::mem::zeroed;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
-    UnregisterHotKey, VK_CONTROL, VK_ESCAPE, VK_F1, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RMENU,
-    VK_RSHIFT, VK_RWIN,
+    UnregisterHotKey, VK_CONTROL, VK_ESCAPE, VK_F1, VK_INSERT, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
@@ -427,17 +429,17 @@ fn show_overlay_helper(message: &str) {
     let _ = spawn_overlay_helper(message);
 }
 
-fn show_countdown_helper(clear_seconds: u64) {
+fn show_countdown_helper(clear_seconds: u64) -> Option<Child> {
     let executable = match std::env::current_exe() {
         Ok(path) => path,
 
         Err(error) => {
             eprintln!("password-out error: failed to locate current executable: {error}");
-            return;
+            return None;
         }
     };
 
-    if let Err(error) = Command::new(executable)
+    match Command::new(executable)
         .arg("--countdown")
         .arg(clear_seconds.to_string())
         .stdin(Stdio::null())
@@ -445,8 +447,148 @@ fn show_countdown_helper(clear_seconds: u64) {
         .stderr(Stdio::null())
         .spawn()
     {
-        eprintln!("password-out error: failed to spawn countdown helper: {error}");
+        Ok(child) => Some(child),
+
+        Err(error) => {
+            eprintln!("password-out error: failed to spawn countdown helper: {error}");
+            None
+        }
     }
+}
+
+static NEXT_CLIPBOARD_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+struct ActiveClipboardSecret {
+    generation: u64,
+    secret: String,
+    countdown: Option<Child>,
+}
+
+type SharedClipboardState = Arc<Mutex<Option<ActiveClipboardSecret>>>;
+
+fn stop_countdown(countdown: &mut Option<Child>) {
+    if let Some(mut child) = countdown.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn deactivate_if_generation_matches(state: &SharedClipboardState, generation: u64) {
+    let Ok(mut active) = state.lock() else {
+        return;
+    };
+
+    let Some(current) = active.as_mut() else {
+        return;
+    };
+
+    if current.generation != generation {
+        return;
+    }
+
+    stop_countdown(&mut current.countdown);
+    *active = None;
+}
+
+fn activate_clipboard_secret(state: &SharedClipboardState, secret: String, clear_seconds: u64) {
+    let generation = NEXT_CLIPBOARD_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let countdown = show_countdown_helper(clear_seconds);
+
+    if let Ok(mut active) = state.lock() {
+        if let Some(previous) = active.as_mut() {
+            stop_countdown(&mut previous.countdown);
+        }
+
+        *active = Some(ActiveClipboardSecret {
+            generation,
+            secret: secret.clone(),
+            countdown,
+        });
+    }
+
+    let timeout_state = Arc::clone(state);
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(clear_seconds));
+
+        let should_clear = timeout_state
+            .lock()
+            .ok()
+            .and_then(|active| {
+                active
+                    .as_ref()
+                    .map(|current| current.generation == generation && current.secret == secret)
+            })
+            .unwrap_or(false);
+
+        if !should_clear {
+            return;
+        }
+
+        let _ = clipboard::clear_if_matches(&secret);
+        deactivate_if_generation_matches(&timeout_state, generation);
+    });
+}
+
+fn start_clipboard_monitor(state: SharedClipboardState) {
+    thread::spawn(move || {
+        let mut previous_v_down = false;
+        let mut previous_insert_down = false;
+
+        loop {
+            let control_down = key_is_down(VK_CONTROL as i32);
+            let shift_down = key_is_down(VK_LSHIFT as i32) || key_is_down(VK_RSHIFT as i32);
+            let v_down = key_is_down('V' as i32);
+            let insert_down = key_is_down(VK_INSERT as i32);
+
+            let paste_pressed = (control_down && v_down && !previous_v_down)
+                || (shift_down && insert_down && !previous_insert_down);
+
+            previous_v_down = v_down;
+            previous_insert_down = insert_down;
+
+            let snapshot = state.lock().ok().and_then(|active| {
+                active
+                    .as_ref()
+                    .map(|current| (current.generation, current.secret.clone()))
+            });
+
+            if let Some((generation, secret)) = snapshot {
+                match clipboard::current_text() {
+                    Ok(current) if current != secret => {
+                        deactivate_if_generation_matches(&state, generation);
+                    }
+
+                    Ok(_) if paste_pressed => {
+                        let paste_state = Arc::clone(&state);
+
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(125));
+
+                            let should_clear = paste_state
+                                .lock()
+                                .ok()
+                                .and_then(|active| {
+                                    active.as_ref().map(|current| {
+                                        current.generation == generation && current.secret == secret
+                                    })
+                                })
+                                .unwrap_or(false);
+
+                            if should_clear {
+                                let _ = clipboard::clear_if_matches(&secret);
+                                deactivate_if_generation_matches(&paste_state, generation);
+                            }
+                        });
+                    }
+
+                    Ok(_) | Err(_) => {}
+                }
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
 }
 
 fn key_is_down(virtual_key: i32) -> bool {
@@ -495,6 +637,9 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
     if entries.is_empty() {
         return Err("no PasswordOut entries were loaded".to_string());
     }
+
+    let clipboard_state: SharedClipboardState = Arc::new(Mutex::new(None));
+    start_clipboard_monitor(Arc::clone(&clipboard_state));
 
     let list_overlay_message = build_entry_list_overlay(&entries);
     let mut id_to_entry: HashMap<i32, RuntimeEntry> = HashMap::new();
@@ -611,9 +756,7 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
             continue;
         }
 
-        clipboard::clear_clipboard_if_matches_after(entry.secret.clone(), clear_seconds);
-
-        show_countdown_helper(clear_seconds);
+        activate_clipboard_secret(&clipboard_state, entry.secret.clone(), clear_seconds);
 
         println!("Copied secret for '{}'.", entry.name);
 

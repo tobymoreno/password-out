@@ -1,5 +1,3 @@
-use std::{thread, time::Duration};
-
 pub fn copy_to_clipboard(value: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new()
         .map_err(|error| format!("failed to open Windows clipboard: {error}"))?;
@@ -9,20 +7,30 @@ pub fn copy_to_clipboard(value: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to write Windows clipboard: {error}"))
 }
 
-pub fn clear_clipboard_if_matches_after(expected: String, clear_seconds: u64) {
-    thread::spawn(move || {
-        thread::sleep(Duration::from_secs(clear_seconds));
+pub fn current_text() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to open Windows clipboard: {error}"))?;
 
-        let Ok(mut clipboard) = arboard::Clipboard::new() else {
-            return;
-        };
+    clipboard
+        .get_text()
+        .map_err(|error| format!("failed to read Windows clipboard: {error}"))
+}
 
-        let Ok(current_value) = clipboard.get_text() else {
-            return;
-        };
+pub fn clear_if_matches(expected: &str) -> Result<bool, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to open Windows clipboard: {error}"))?;
 
-        if current_value == expected {
-            let _ = clipboard.set_text(String::new());
-        }
-    });
+    let current_value = clipboard
+        .get_text()
+        .map_err(|error| format!("failed to read Windows clipboard: {error}"))?;
+
+    if current_value != expected {
+        return Ok(false);
+    }
+
+    clipboard
+        .set_text(String::new())
+        .map_err(|error| format!("failed to clear Windows clipboard: {error}"))?;
+
+    Ok(true)
 }

@@ -8,7 +8,7 @@ pub use macos::{clear_clipboard_if_matches_after, copy_to_clipboard};
 mod windows;
 
 #[cfg(target_os = "windows")]
-pub use windows::{clear_clipboard_if_matches_after, copy_to_clipboard};
+pub use windows::{clear_if_matches, copy_to_clipboard, current_text};
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 compile_error!("PasswordOut clipboard support is currently implemented only for macOS and Windows");

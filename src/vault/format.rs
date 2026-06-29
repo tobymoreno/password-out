@@ -141,7 +141,7 @@ pub struct CipherPayload {
 
 pub const DEFAULT_CLIPBOARD_CLEAR_SECONDS: u64 = 30;
 pub const MIN_CLIPBOARD_CLEAR_SECONDS: u64 = 1;
-pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 86_400;
+pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VaultSettings {

@@ -4,14 +4,14 @@ PasswordOut is a cross-platform, hotkey-driven credential manager for macOS and 
 
 You assign a global keyboard chord to each credential. While PasswordOut is running, pressing that chord copies the credential’s password to the clipboard temporarily and displays a confirmation that never shows the password itself.
 
-This guide covers normal user operations. For build and development setup, see:
+This guide covers normal user operations. For build setup and developer reference guide, see:
 
 ```text
-INSTALLATION.md
-DEVELOPER.md
-CAC_ARCHITECTURE.md
-VAULT_RECOVERY.md
-ATOMIC_WRITES.md
+docs/INSTALLATION.md
+docs/DEVELOPER.md
+docs/CAC_ARCHITECTURE.md
+docs/VAULT_RECOVERY.md
+docs/ATOMIC_WRITES.md
 ```
 
 ---

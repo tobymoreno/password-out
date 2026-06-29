@@ -1,5 +1,6 @@
 use password_out::certificate::{CertificateIdentity, KeyWrapAlgorithm};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub const VAULT_FORMAT_VERSION_V1: u32 = 1;
 pub const VAULT_FORMAT_VERSION_V2: u32 = 2;
@@ -167,11 +168,30 @@ pub struct VaultPayload {
     pub entries: Vec<VaultEntry>,
 }
 
+fn default_entry_id() -> Uuid {
+    Uuid::nil()
+}
+
+fn default_domain() -> String {
+    "domain".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VaultEntry {
-    pub name: String,
+    #[serde(default = "default_entry_id")]
+    pub id: Uuid,
+
+    #[serde(default = "default_domain")]
+    pub domain: String,
+
+    #[serde(alias = "name")]
+    pub username: String,
+
     pub hotkey: String,
     pub secret: String,
+
+    #[serde(default)]
+    pub expires_on: Option<String>,
 }
 
 impl VaultEnvelope {
@@ -410,12 +430,19 @@ impl VaultPayload {
         self.settings.validate()
     }
 
-    pub fn find_entry(&self, name: &str) -> Option<&VaultEntry> {
-        self.entries.iter().find(|entry| entry.name == name)
+    pub fn find_entry(&self, domain: &str, username: &str) -> Option<&VaultEntry> {
+        self.entries.iter().find(|entry| {
+            entry.domain.eq_ignore_ascii_case(domain)
+                && entry.username.eq_ignore_ascii_case(username)
+        })
     }
 
-    pub fn contains_name(&self, name: &str) -> bool {
-        self.find_entry(name).is_some()
+    pub fn contains_account(&self, domain: &str, username: &str) -> bool {
+        self.find_entry(domain, username).is_some()
+    }
+
+    pub fn find_entry_by_id(&self, id: Uuid) -> Option<&VaultEntry> {
+        self.entries.iter().find(|entry| entry.id == id)
     }
 }
 
@@ -457,22 +484,25 @@ mod tests {
         let payload = VaultPayload {
             settings: VaultSettings::default(),
             entries: vec![VaultEntry {
-                name: "admin01".to_string(),
+                id: Uuid::new_v4(),
+                domain: "CORP".to_string(),
+                username: "admin01".to_string(),
                 hotkey: "CTRL+ALT+1".to_string(),
                 secret: "example".to_string(),
+                expires_on: Some("2026-08-15".to_string()),
             }],
         };
 
-        assert!(payload.contains_name("admin01"));
+        assert!(payload.contains_account("corp", "ADMIN01"));
 
         assert_eq!(
             payload
-                .find_entry("admin01")
+                .find_entry("CORP", "admin01")
                 .map(|entry| entry.hotkey.as_str()),
             Some("CTRL+ALT+1")
         );
 
-        assert!(!payload.contains_name("missing"));
+        assert!(!payload.contains_account("CORP", "missing"));
     }
 
     #[test]
@@ -484,6 +514,23 @@ mod tests {
             payload.settings.clipboard_clear_seconds,
             DEFAULT_CLIPBOARD_CLEAR_SECONDS
         );
+    }
+
+    #[test]
+    fn legacy_entry_uses_default_domain_and_name_alias() {
+        let entry: VaultEntry = serde_json::from_str(
+            r#"{
+                "name":"admin01",
+                "hotkey":"CTRL+ALT+1",
+                "secret":"example"
+            }"#,
+        )
+        .expect("legacy entry should deserialize");
+
+        assert!(entry.id.is_nil());
+        assert_eq!(entry.domain, "domain");
+        assert_eq!(entry.username, "admin01");
+        assert_eq!(entry.expires_on, None);
     }
 
     #[test]

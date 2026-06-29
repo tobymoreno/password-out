@@ -4,7 +4,7 @@ use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_VCENTER, DeleteObject,
+    BeginPaint, CreateFontW, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_WORDBREAK, DeleteObject,
     DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, InvalidateRect, PAINTSTRUCT, ReleaseDC,
     SelectObject, SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
 };
@@ -109,6 +109,11 @@ unsafe extern "system" fn window_proc(
                         GetClientRect(hwnd, &mut rect);
                     }
 
+                    rect.left += HORIZONTAL_PADDING / 2;
+                    rect.right -= HORIZONTAL_PADDING / 2;
+                    rect.top += VERTICAL_PADDING / 2;
+                    rect.bottom -= VERTICAL_PADDING / 2;
+
                     let character_count = state.text.len().saturating_sub(1) as i32;
 
                     unsafe {
@@ -117,7 +122,7 @@ unsafe extern "system" fn window_proc(
                             state.text.as_ptr(),
                             character_count,
                             &mut rect,
-                            DT_CENTER | DT_VCENTER | DT_NOPREFIX,
+                            DT_CENTER | DT_NOPREFIX | DT_WORDBREAK,
                         );
                     }
                 }

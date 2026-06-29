@@ -178,7 +178,17 @@ fn open_vault(pfx_path: &Path, vault_path: &Path) -> Result<(), String> {
     println!("Credential entries: {}", payload.entries.len());
 
     for entry in &payload.entries {
-        println!("- {}", entry.name);
+        match entry.expires_on.as_deref() {
+            Some(expires_on) => {
+                println!(
+                    "- {}\\{} (expires {})",
+                    entry.domain, entry.username, expires_on
+                );
+            }
+            None => {
+                println!("- {}\\{}", entry.domain, entry.username);
+            }
+        }
     }
 
     Ok(())

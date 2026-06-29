@@ -456,9 +456,11 @@ mod tests {
 
         add_entry(
             &mut payload,
+            "domain".to_string(),
             "admin01".to_string(),
             "CTRL+ALT+1".to_string(),
             "example-password".to_string(),
+            None,
         )
         .expect("entry should be added");
 

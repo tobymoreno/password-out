@@ -6,6 +6,7 @@ extern crate self as password_out;
 pub mod entries;
 
 pub mod certificate;
+pub mod expiration;
 pub mod smartcard;
 pub mod vault_core;
 

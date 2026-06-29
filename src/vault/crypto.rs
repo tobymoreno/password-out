@@ -336,9 +336,12 @@ mod tests {
         VaultPayload {
             settings: Default::default(),
             entries: vec![VaultEntry {
-                name: "admin01".to_string(),
+                id: uuid::Uuid::new_v4(),
+                domain: "domain".to_string(),
+                username: "admin01".to_string(),
                 hotkey: "CTRL+ALT+1".to_string(),
                 secret: "example-password".to_string(),
+                expires_on: Some("2026-08-15".to_string()),
             }],
         }
     }

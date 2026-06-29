@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod clipboard;
 mod entries;
+mod expiration;
 mod hotkey;
 mod overlay;
 mod vault;

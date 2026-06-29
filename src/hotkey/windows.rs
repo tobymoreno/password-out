@@ -627,7 +627,18 @@ fn build_entry_list_overlay(entries: &[RuntimeEntry]) -> String {
 
     for entry in entries {
         message.push('\n');
-        message.push_str(&format!("{:<20} {}", entry.name, entry.hotkey));
+
+        match entry.expires_on.as_deref() {
+            Some(expires_on) => {
+                message.push_str(&format!(
+                    "{:<28} {:<18} expires {}",
+                    entry.account, entry.hotkey, expires_on
+                ));
+            }
+            None => {
+                message.push_str(&format!("{:<28} {}", entry.account, entry.hotkey));
+            }
+        }
     }
 
     message
@@ -651,7 +662,7 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
         let id = i32::try_from(index + 1).map_err(|_| "too many hotkey entries".to_string())?;
 
         let parsed = parse_hotkey(&entry.hotkey)
-            .map_err(|error| format!("failed parsing hotkey for '{}': {error}", entry.name))?;
+            .map_err(|error| format!("failed parsing hotkey for '{}': {error}", entry.account))?;
 
         let registered =
             unsafe { RegisterHotKey(null_mut(), id, parsed.modifiers, parsed.virtual_key) };
@@ -662,12 +673,12 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
             return Err(format!(
                 "failed to register hotkey '{}' for '{}': {}",
                 entry.hotkey,
-                entry.name,
+                entry.account,
                 io::Error::last_os_error()
             ));
         }
 
-        println!("  {:<20} {}", entry.name, entry.hotkey);
+        println!("  {:<20} {}", entry.account, entry.hotkey);
 
         id_to_entry.insert(id, entry);
     }
@@ -758,9 +769,24 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
 
         activate_clipboard_secret(&clipboard_state, entry.secret.clone(), clear_seconds);
 
-        println!("Copied secret for '{}'.", entry.name);
+        println!("Copied secret for '{}'.", entry.account);
 
-        let overlay_message = format!("Password for {} copied to clipboard", entry.name);
+        let overlay_message = match (
+            entry.expires_on.as_deref(),
+            entry.expiration_warning.as_deref(),
+        ) {
+            (Some(expires_on), Some(warning)) => format!(
+                "Password for {} copied to clipboard\nExpires: {}\n{}",
+                entry.account, expires_on, warning
+            ),
+            (Some(expires_on), None) => format!(
+                "Password for {} copied to clipboard\nExpires: {}",
+                entry.account, expires_on
+            ),
+            (None, _) => {
+                format!("Password for {} copied to clipboard", entry.account)
+            }
+        };
 
         show_overlay_helper(&overlay_message);
     }

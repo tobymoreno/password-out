@@ -771,12 +771,21 @@ pub fn listen(entries: Vec<RuntimeEntry>, clear_seconds: u64) -> Result<(), Stri
 
         println!("Copied secret for '{}'.", entry.account);
 
-        let overlay_message = match entry.expires_on.as_deref() {
-            Some(expires_on) => format!(
+        let overlay_message = match (
+            entry.expires_on.as_deref(),
+            entry.expiration_warning.as_deref(),
+        ) {
+            (Some(expires_on), Some(warning)) => format!(
+                "Password for {} copied to clipboard\nExpires: {}\n{}",
+                entry.account, expires_on, warning
+            ),
+            (Some(expires_on), None) => format!(
                 "Password for {} copied to clipboard\nExpires: {}",
                 entry.account, expires_on
             ),
-            None => format!("Password for {} copied to clipboard", entry.account),
+            (None, _) => {
+                format!("Password for {} copied to clipboard", entry.account)
+            }
         };
 
         show_overlay_helper(&overlay_message);

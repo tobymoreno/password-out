@@ -13,7 +13,7 @@ use std::time::Duration;
 
 const SINGLE_LINE_FONT_SIZE: f64 = 44.0;
 const MULTILINE_FONT_SIZE: f64 = 44.0;
-const MULTILINE_LINE_HEIGHT: f64 = 44.0;
+const MULTILINE_LINE_HEIGHT: f64 = 56.0;
 const COUNTDOWN_FONT_SIZE: f64 = 28.0;
 
 const SINGLE_HORIZONTAL_PADDING: f64 = 80.0;
@@ -27,7 +27,6 @@ const COUNTDOWN_WIDTH: f64 = 390.0;
 const COUNTDOWN_HEIGHT: f64 = 72.0;
 
 const MIN_WIDTH: f64 = 320.0;
-const MAX_MULTILINE_WIDTH: f64 = 1100.0;
 const SCREEN_MARGIN: f64 = 40.0;
 const TOP_MARGIN: f64 = 40.0;
 const RIGHT_MARGIN: f64 = 40.0;
@@ -207,21 +206,34 @@ unsafe fn calculate_single_line_frame(label: id, screen_frame: NSRect) -> NSRect
 }
 
 fn calculate_multiline_frame(message: &str, screen_frame: NSRect) -> NSRect {
-    let (line_count, longest_line) = multiline_metrics(message);
+    let (_, longest_line) = multiline_metrics(message);
 
-    let estimated_text_width =
-        longest_line as f64 * MULTILINE_FONT_SIZE * MULTILINE_CHARACTER_WIDTH_FACTOR;
+    let estimated_character_width = MULTILINE_FONT_SIZE * MULTILINE_CHARACTER_WIDTH_FACTOR;
 
-    let screen_max_width = (screen_frame.size.width - (SCREEN_MARGIN * 2.0)).max(MIN_WIDTH);
-    let max_width = screen_max_width.min(MAX_MULTILINE_WIDTH);
+    let estimated_text_width = longest_line as f64 * estimated_character_width;
+    let max_width = (screen_frame.size.width - (SCREEN_MARGIN * 2.0)).max(MIN_WIDTH);
 
     let width = (estimated_text_width + MULTILINE_HORIZONTAL_PADDING)
         .max(MIN_WIDTH)
         .min(max_width);
 
+    let available_text_width = (width - MULTILINE_HORIZONTAL_PADDING).max(1.0);
+    let characters_per_row = (available_text_width / estimated_character_width)
+        .floor()
+        .max(1.0) as usize;
+
+    let wrapped_line_count = message
+        .lines()
+        .map(|line| {
+            let character_count = line.chars().count().max(1);
+            character_count.div_ceil(characters_per_row)
+        })
+        .sum::<usize>()
+        .max(1);
+
     let max_height = (screen_frame.size.height - (TOP_MARGIN + SCREEN_MARGIN)).max(120.0);
-    let height = ((line_count as f64 * MULTILINE_LINE_HEIGHT) + MULTILINE_VERTICAL_PADDING)
-        .max(100.0)
+    let height = ((wrapped_line_count as f64 * MULTILINE_LINE_HEIGHT) + MULTILINE_VERTICAL_PADDING)
+        .max(120.0)
         .min(max_height);
 
     positioned_center_frame(screen_frame, width, height)
@@ -263,6 +275,18 @@ unsafe fn resize_label(label: id, window_frame: NSRect, is_multiline: bool) {
     );
 
     let _: () = msg_send![label, setFrame: label_frame];
+
+    if is_multiline {
+        let text_container: id = msg_send![label, textContainer];
+
+        if text_container != nil {
+            let _: () = msg_send![
+                text_container,
+                setContainerSize: NSSize::new(label_frame.size.width, f64::MAX)
+            ];
+            let _: () = msg_send![text_container, setWidthTracksTextView: YES];
+        }
+    }
 }
 
 unsafe fn resize_countdown_view(text_view: id, window_frame: NSRect) {

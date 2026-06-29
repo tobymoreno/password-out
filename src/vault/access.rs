@@ -192,9 +192,12 @@ mod tests {
         VaultPayload {
             settings: Default::default(),
             entries: vec![VaultEntry {
-                name: "GitHub".to_string(),
+                id: uuid::Uuid::new_v4(),
+                domain: "domain".to_string(),
+                username: "GitHub".to_string(),
                 hotkey: "CTRL+ALT+G".to_string(),
                 secret: "test-secret".to_string(),
+                expires_on: None,
             }],
         }
     }
@@ -208,7 +211,7 @@ mod tests {
             .expect("in-memory vault should load");
 
         assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(loaded.entries[0].name, "GitHub");
+        assert_eq!(loaded.entries[0].username, "GitHub");
         assert_eq!(access.load_count(), 1);
         assert_eq!(access.save_count(), 0);
     }
@@ -319,9 +322,11 @@ mod tests {
         add_entry_with_access(
             &vault_path,
             &mut access,
+            "domain".to_string(),
             "GitHub".to_string(),
             "CTRL+ALT+G".to_string(),
             "github-secret".to_string(),
+            Some("2026-08-15".to_string()),
         )
         .expect("entry should save through certificate access");
 
@@ -337,9 +342,12 @@ mod tests {
             .expect("saved certificate vault should reopen");
 
         assert_eq!(payload.entries.len(), 1);
-        assert_eq!(payload.entries[0].name, "GitHub");
+        assert_eq!(payload.entries[0].username, "GitHub");
+        assert_eq!(payload.entries[0].domain, "domain");
         assert_eq!(payload.entries[0].hotkey, "CTRL+ALT+G");
         assert_eq!(payload.entries[0].secret, "github-secret");
+        assert_eq!(payload.entries[0].expires_on.as_deref(), Some("2026-08-15"));
+        assert!(!payload.entries[0].id.is_nil());
 
         let _ = std::fs::remove_dir_all(test_dir);
     }

@@ -1,5 +1,6 @@
 use crate::{
     cli::{self, Mode},
+    expiration::{DEFAULT_EXPIRATION_WARNING_DAYS, current_expiration_status, warning_message},
     hotkey, overlay, vault,
 };
 
@@ -17,12 +18,22 @@ pub fn run() -> Result<(), String> {
             let runtime_entries = payload
                 .entries
                 .into_iter()
-                .map(|entry| hotkey::RuntimeEntry {
-                    name: entry.name,
-                    hotkey: entry.hotkey,
-                    secret: entry.secret,
+                .map(|entry| {
+                    let expiration_warning = current_expiration_status(
+                        entry.expires_on.as_deref(),
+                        DEFAULT_EXPIRATION_WARNING_DAYS,
+                    )
+                    .map(warning_message)?;
+
+                    Ok(hotkey::RuntimeEntry {
+                        account: format!("{}\\{}", entry.domain, entry.username),
+                        hotkey: entry.hotkey,
+                        secret: entry.secret,
+                        expires_on: entry.expires_on,
+                        expiration_warning,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, String>>()?;
 
             hotkey::listen(runtime_entries, clear_seconds)
         }

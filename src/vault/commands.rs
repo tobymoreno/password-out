@@ -633,20 +633,28 @@ fn load_payload_with_access(
 pub fn run_add(path: &Path) -> Result<(), String> {
     let mut access = create_vault_access(path)?;
 
-    let name = prompt_text("Entry name: ")?;
+    let domain = prompt_text_with_default("Domain [domain]: ", "domain")?;
+    let username = prompt_text("Username: ")?;
     let hotkey = hotkey::capture()?;
     let secret = prompt_secret("Password: ")?;
+    let expires_on = prompt_optional_text("Expiration date (YYYY-MM-DD, optional): ")?;
 
     add_entry_with_access(
         path,
         access.as_mut(),
-        name.clone(),
+        domain.clone(),
+        username.clone(),
         hotkey.clone(),
         secret.to_string(),
+        expires_on.clone(),
     )?;
 
     println!("Added entry:");
-    println!("  {name}  {hotkey}");
+    println!("  {}\\{}  {}", domain, username, hotkey);
+
+    if let Some(expires_on) = expires_on {
+        println!("  Expires: {expires_on}");
+    }
 
     Ok(())
 }
@@ -662,9 +670,14 @@ pub fn run_list(path: &Path) -> Result<(), String> {
     }
 
     println!("PasswordOut entries:");
+    println!(
+        "  {:<16} {:<24} {:<20} EXPIRES",
+        "DOMAIN", "USERNAME", "HOTKEY"
+    );
 
-    for (name, hotkey) in entries {
-        println!("  {name:<20} {hotkey}");
+    for (domain, username, hotkey, expires_on) in entries {
+        let expires_on = expires_on.as_deref().unwrap_or("-");
+        println!("  {domain:<16} {username:<24} {hotkey:<20} {expires_on}");
     }
 
     Ok(())
@@ -681,23 +694,32 @@ pub fn run_remove(path: &Path) -> Result<(), String> {
     }
 
     println!("PasswordOut entries:");
+    println!(
+        "  {:<16} {:<24} {:<20} EXPIRES",
+        "DOMAIN", "USERNAME", "HOTKEY"
+    );
 
-    for (name, hotkey) in &entries {
-        println!("  {name:<20} {hotkey}");
+    for (domain, username, hotkey, expires_on) in &entries {
+        let expires_on = expires_on.as_deref().unwrap_or("-");
+        println!("  {domain:<16} {username:<24} {hotkey:<20} {expires_on}");
     }
 
     println!();
 
-    let name = prompt_text("Entry name to remove: ")?;
+    let domain = prompt_text_with_default("Domain [domain]: ", "domain")?;
+    let username = prompt_text("Username to remove: ")?;
 
-    let (_, hotkey) = entries
+    let (_, _, hotkey, _) = entries
         .iter()
-        .find(|(entry_name, _)| entry_name == &name)
-        .ok_or_else(|| format!("entry '{name}' was not found"))?;
+        .find(|(entry_domain, entry_username, _, _)| {
+            entry_domain.eq_ignore_ascii_case(&domain)
+                && entry_username.eq_ignore_ascii_case(&username)
+        })
+        .ok_or_else(|| format!("entry '{}\\{}' was not found", domain, username))?;
 
     let confirmation = prompt_text(&format!(
-        "Type REMOVE to delete '{}' ({}) permanently: ",
-        name, hotkey
+        "Type REMOVE to delete '{}\\{}' ({}) permanently: ",
+        domain, username, hotkey
     ))?;
 
     if confirmation != "REMOVE" {
@@ -705,10 +727,14 @@ pub fn run_remove(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let (removed_name, removed_hotkey) = remove_entry_with_access(path, access.as_mut(), &name)?;
+    let (removed_domain, removed_username, removed_hotkey) =
+        remove_entry_with_access(path, access.as_mut(), &domain, &username)?;
 
     println!("Removed entry:");
-    println!("  {removed_name}  {removed_hotkey}");
+    println!(
+        "  {}\\{}  {}",
+        removed_domain, removed_username, removed_hotkey
+    );
 
     Ok(())
 }
@@ -952,9 +978,12 @@ mod vault_info_tests {
         let expected = VaultPayload {
             settings: crate::vault::format::VaultSettings::default(),
             entries: vec![VaultEntry {
-                name: "listener-user".to_string(),
+                id: uuid::Uuid::new_v4(),
+                domain: "domain".to_string(),
+                username: "listener-user".to_string(),
                 hotkey: "CTRL+ALT+1".to_string(),
                 secret: "listener-secret".to_string(),
+                expires_on: None,
             }],
         };
 

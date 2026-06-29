@@ -1,8 +1,11 @@
 #[derive(Debug, Clone)]
 pub struct RuntimeEntry {
-    pub name: String,
+    /// Human-facing account identifier in DOMAIN\username form.
+    pub account: String,
     pub hotkey: String,
     pub secret: String,
+    pub expires_on: Option<String>,
+    pub expiration_warning: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
